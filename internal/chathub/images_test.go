@@ -54,3 +54,18 @@ func TestImageURLsRejectsUnsafe(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestChatPayloadIncludesRegularFileAnnotation(t *testing.T) {
+	payload := chatPayload(Request{
+		Text: "inspect the attachment",
+		Attachments: []Attachment{{
+			Type: "file", DocID: "doc-123", Name: "notes.pdf", FileType: "pdf",
+		}},
+	}, "request-123", true)
+
+	for _, want := range []string{`"messageAnnotationType":"File"`, `"fileName":"notes.pdf"`, `"fileType":"pdf"`, `"id":"doc-123"`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("payload missing %s: %s", want, payload)
+		}
+	}
+}

@@ -113,3 +113,21 @@ func TestResponsesStreamEmitsFailedForInnerRequestError(t *testing.T) {
 		t.Fatalf("unexpected completion event in %s", body)
 	}
 }
+
+func TestParseContentAcceptsNestedFileSource(t *testing.T) {
+	content := []any{
+		map[string]any{
+			"type":      "input_file",
+			"filename":  "project.md",
+			"mime_type": "text/markdown",
+			"source":    map[string]any{"data": "data:text/markdown;base64,IyBQcm9qZWN0"},
+		},
+	}
+	text, files := parseContent(content)
+	if text != "" || len(files) != 1 {
+		t.Fatalf("text=%q files=%#v", text, files)
+	}
+	if files[0].Type != "file" || files[0].Name != "project.md" || files[0].MimeType != "text/markdown" || files[0].URL != "data:text/markdown;base64,IyBQcm9qZWN0" {
+		t.Fatalf("file=%#v", files[0])
+	}
+}

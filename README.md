@@ -258,7 +258,41 @@ python manage.py stop     # 停止服务
 
 ### Docker 部署
 
-> 官方不提供 Dockerfile。如需容器化部署，可自行基于预编译二进制或源码构建镜像，或在 Discussions 交流社区方案。
+项目已提供多阶段 `Dockerfile` 与 `docker-compose.yml`，默认仅绑定宿主机 `127.0.0.1:4141`，并将运行数据持久化到 `./data`。
+
+```bash
+cp .env.example .env
+mkdir -p data secrets
+printf '%s' '请替换为高强度初始密码' > secrets/m365_admin_password
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force data, secrets | Out-Null
+[System.IO.File]::WriteAllText("$PWD\secrets\m365_admin_password", "请替换为高强度初始密码")
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
+```
+
+启动后访问 `http://127.0.0.1:4141`。如需对局域网或公网直接开放，请在 `.env` 中将 `M365_DOCKER_PORT` 改为 `0.0.0.0:4141`，并在前置反向代理处配置 HTTPS、访问控制和限流。
+
+常用维护命令：
+
+```bash
+docker compose pull
+docker compose up -d --build
+docker compose restart
+docker compose down
+docker compose logs --tail=200
+```
+
+容器内置 `/api/health` 健康检查、JSON 日志轮转、非 root 用户运行、CA 证书和时区数据。管理员初始密码通过只读文件挂载传入，首次登录后应立即修改。`./data` 和 `./secrets` 已被 Git 与 Docker 构建上下文忽略，请勿提交其中内容。
 
 ### 初始化与第一次调用
 

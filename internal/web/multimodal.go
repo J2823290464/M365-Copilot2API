@@ -64,6 +64,9 @@ func parseContent(c any) (string, []chathub.Attachment) {
 			}
 		case "input_file", "file":
 			u := stringValue(m, "file_data", "file_url", "url", "source", "file_id")
+			if raw, ok := m["source"].(map[string]any); ok && u == "" {
+				u = stringValue(raw, "url", "data", "file_data", "file_url")
+			}
 			if u != "" || stringValue(m, "filename", "name") != "" {
 				files = append(files, chathub.Attachment{Type: "file", URL: u, Name: stringValue(m, "filename", "name"), MimeType: stringValue(m, "mime_type", "mimeType", "content_type")})
 			}
