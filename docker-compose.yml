@@ -31,7 +31,6 @@ services:
       M365_SESSION_CACHE: /data/sessions.json
       M365_CONVERSATION_CACHE: /data/conversations.json
       M365_API_KEYS: /data/api-keys.json
-      M365_ADMIN_PASSWORD_FILE: /data/admin-password
       M365_ADMIN_PASSWORD_BOOTSTRAP_FILE: /run/secrets/m365_admin_password
       M365_REQUIRE_STRONG_ADMIN_PASSWORD: "1"
       M365_CHAT_TIMEOUT_SECONDS: "120"

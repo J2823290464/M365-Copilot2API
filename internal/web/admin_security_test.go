@@ -103,6 +103,26 @@ func TestAdminLoginLocksAfterFiveFailures(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointDoesNotRequireAdminSession(t *testing.T) {
+	t.Setenv("M365_ADMIN_PASSWORD", "H3alth!Check#Strong2026")
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password-health")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+	s, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+
+	r, err := ts.Client().Get(ts.URL + "/api/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("health endpoint requires admin session: status=%d", r.StatusCode)
+	}
+}
 func TestPersistedPasswordOverridesBootstrapEnv(t *testing.T) {
 	path := t.TempDir() + "/admin-password"
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", path)
