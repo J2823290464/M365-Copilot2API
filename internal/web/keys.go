@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -38,8 +37,7 @@ func newAPIKeyStore(path string) *apiKeyStore {
 func openAPIKeys() *apiKeyStore {
 	p := strings.TrimSpace(os.Getenv("M365_API_KEYS"))
 	if p == "" {
-		h, _ := os.UserHomeDir()
-		p = filepath.Join(h, ".config", "m365-copilot2api", "api-keys.json")
+		p = dataPath("api-keys.json")
 	}
 	s := newAPIKeyStore(p)
 	b, e := os.ReadFile(p)
@@ -65,9 +63,6 @@ func (s *apiKeyStore) flush() error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	s.mu.Unlock()
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
 		return err
 	}
 	return writeFileAtomic(s.Path, b, 0600)

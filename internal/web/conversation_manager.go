@@ -62,7 +62,7 @@ func openConversationManager() *conversationManager {
 	}
 	path := os.Getenv("M365_CONVERSATION_CACHE")
 	if path == "" {
-		path = "conversations.json"
+		path = dataPath("conversations.json")
 	}
 	cm := &conversationManager{
 		path:      path,

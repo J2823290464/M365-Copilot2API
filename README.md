@@ -382,7 +382,7 @@ docker compose logs --tail=200
 |------|------|
 | `M365_TOKEN_CACHE` | Token 缓存文件（未设置时落到数据目录） |
 | `M365_SESSION_CACHE` | 会话绑定缓存文件（默认 `sessions.json`） |
-| `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `conversations.json`） |
+| `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `${M365_DATA_DIR}/conversations.json`） |
 | `M365_API_KEYS` | API Key 存储文件 |
 | `M365_USAGE_LOG` | 用量统计日志（默认 `{data_dir}/usage.jsonl`） |
 | `M365_DEBUG_LOG` | 调试日志文件（请求 / 响应元数据） |

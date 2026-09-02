@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -69,8 +68,7 @@ func openCacheStats() *CacheStats {
 }
 
 func statsPath() string {
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-copilot2api", "stats.json")
+	return dataPath("stats.json")
 }
 
 func (s *CacheStats) RecordRequest(apiKey string, hit bool, tokensSent, tokensSaved int64, activeSessions int) {
@@ -156,9 +154,6 @@ func (s *CacheStats) flush() error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	s.mu.Unlock()
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return err
 	}
 	return writeFileAtomic(s.path, b, 0600)
