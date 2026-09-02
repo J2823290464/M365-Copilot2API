@@ -148,11 +148,15 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 	rows := make(map[string]map[string]any)
 	var cloudErr error
 	if m365CloudClient != nil {
+		cloudAccount, hasCloudAccount := s.tokens.First()
 		var chats []map[string]any
 		chats, cloudErr = m365CloudClient.ListConversations()
 		for _, chat := range chats {
 			conversationID, _ := chat["conversationId"].(string)
 			if conversationID != "" {
+				if hasCloudAccount {
+					fillConversationAccount(chat, cloudAccount.ID, cloudAccount.Email)
+				}
 				rows[conversationID] = chat
 			}
 		}
@@ -196,6 +200,15 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		response["warning"] = cloudErr.Error()
 	}
 	jsonOut(w, response)
+}
+
+func fillConversationAccount(row map[string]any, accountID, accountEmail string) {
+	if value, _ := row["accountId"].(string); strings.TrimSpace(value) == "" {
+		row["accountId"] = accountID
+	}
+	if value, _ := row["accountEmail"].(string); strings.TrimSpace(value) == "" {
+		row["accountEmail"] = accountEmail
+	}
 }
 
 func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Request) {
