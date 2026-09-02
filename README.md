@@ -269,6 +269,12 @@ docker compose ps
 docker compose logs -f
 ```
 
+如果构建时访问 `proxy.golang.org` 超时，Compose 默认会依次尝试 `goproxy.cn`、官方代理和直连。也可以在 `.env` 中将 `GOPROXY` 改为公司内部 Go module 代理，或临时执行：
+
+```bash
+GOPROXY=https://your-proxy.example.com,direct docker compose build --no-cache
+```
+
 Windows PowerShell：
 
 ```powershell
