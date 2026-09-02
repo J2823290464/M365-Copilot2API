@@ -20,11 +20,15 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 		for _, raw := range calls {
 			tc, _ := raw.(map[string]any)
 			fn, _ := tc["function"].(map[string]any)
+			callID := fmt.Sprint(tc["id"])
+			if callID == "" || callID == "<nil>" {
+				callID = "call_" + uuid.NewString()
+			}
 			if tc["type"] == "custom" {
-				output = append(output, map[string]any{"type": "custom_tool_call", "id": "ctc_" + uuid.NewString(), "call_id": tc["id"], "name": fn["name"], "input": customToolInput(fn["arguments"]), "status": "completed"})
+				output = append(output, map[string]any{"type": "custom_tool_call", "id": "ctc_" + uuid.NewString(), "call_id": callID, "name": fn["name"], "input": customToolInput(fn["arguments"]), "status": "completed"})
 				continue
 			}
-			output = append(output, map[string]any{"type": "function_call", "id": "fc_" + uuid.NewString(), "call_id": tc["id"], "name": fn["name"], "arguments": fn["arguments"], "status": "completed"})
+			output = append(output, map[string]any{"type": "function_call", "id": "fc_" + uuid.NewString(), "call_id": callID, "name": fn["name"], "arguments": functionToolArguments(fn["arguments"]), "status": "completed"})
 		}
 	} else {
 		text, _ := msg["content"].(string)
@@ -61,14 +65,18 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 	for i, item := range output {
 		m, _ := item.(map[string]any)
 		addedItem := item
-		if m["type"] == "function_call" {
-			// Arguments arrive in function_call_arguments.delta. Including them
-			// here too would make conforming clients append duplicate JSON.
+		if m["type"] == "function_call" || m["type"] == "custom_tool_call" {
+			// Tool payloads arrive through their delta events. Including the full
+			// payload here would make conforming clients append it twice.
 			added := make(map[string]any, len(m))
 			for k, v := range m {
 				added[k] = v
 			}
-			added["arguments"] = ""
+			if m["type"] == "function_call" {
+				added["arguments"] = ""
+			} else {
+				added["input"] = ""
+			}
 			added["status"] = "in_progress"
 			addedItem = added
 		}
@@ -94,13 +102,41 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 }
 
 func customToolInput(arguments any) string {
-	if s, ok := arguments.(string); ok {
-		var v struct {
-			Input string `json:"input"`
-		}
-		if json.Unmarshal([]byte(s), &v) == nil {
-			return v.Input
+	var value any = arguments
+	if raw, ok := arguments.(json.RawMessage); ok {
+		_ = json.Unmarshal(raw, &value)
+	} else if s, ok := arguments.(string); ok {
+		if json.Unmarshal([]byte(s), &value) != nil {
+			return s
 		}
 	}
+	if m, ok := value.(map[string]any); ok {
+		if input, ok := m["input"].(string); ok {
+			return input
+		}
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
 	return ""
+}
+
+func functionToolArguments(arguments any) string {
+	switch v := arguments.(type) {
+	case string:
+		if json.Valid([]byte(v)) {
+			return v
+		}
+		b, _ := json.Marshal(map[string]any{"input": v})
+		return string(b)
+	case json.RawMessage:
+		if json.Valid(v) {
+			return string(v)
+		}
+	}
+	b, err := json.Marshal(arguments)
+	if err != nil || string(b) == "null" {
+		return "{}"
+	}
+	return string(b)
 }
