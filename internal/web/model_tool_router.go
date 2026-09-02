@@ -95,3 +95,28 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 	}
 	return out, true
 }
+
+func localToolIntent(prompt string) bool {
+	low := strings.ToLower(prompt)
+	keywords := []string{"源码", "源代码", "项目", "代码", "文件", "目录", "路径", "读取", "查看", "检查", "修改", "编辑", "测试", "编译", "source code", "project", "code", "file", "directory", "path", "read", "inspect", "modify", "edit", "test", "compile", "pom.xml", "package.json", "go.mod", "c:\\", "d:\\", "/workspace/", "/src/"}
+	for _, keyword := range keywords {
+		if strings.Contains(low, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClientWorkspaceTool(tools []map[string]any) bool {
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		low := strings.ToLower(name)
+		for _, keyword := range []string{"exec", "shell", "terminal", "file", "directory", "workspace", "code", "patch"} {
+			if strings.Contains(low, keyword) {
+				return true
+			}
+		}
+	}
+	return false
+}

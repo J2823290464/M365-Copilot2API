@@ -87,3 +87,17 @@ func TestAdaptiveToolCallLimitAllowsIndependentReadOnlyCalls(t *testing.T) {
 		t.Fatalf("got %d, want 4", got)
 	}
 }
+
+func TestClientToolPermissionValidation(t *testing.T) {
+	v := defaultRuntimeSettings()
+	for _, permission := range []string{"default", "auto_review", "full_access"} {
+		v.ClientToolPermission = permission
+		if err := validateSettings(v); err != nil {
+			t.Fatalf("permission %s rejected: %v", permission, err)
+		}
+	}
+	v.ClientToolPermission = "invalid"
+	if err := validateSettings(v); err == nil {
+		t.Fatal("invalid permission accepted")
+	}
+}

@@ -62,6 +62,8 @@ type runtimeSettings struct {
 	Scope                      string         `json:"scope"`
 	ModelMappings              []modelMapping `json:"modelMappings"`
 	ToolPlanningMode           string         `json:"toolPlanningMode"`
+	AutoClientToolUse          bool           `json:"autoClientToolUse"`
+	ClientToolPermission       string         `json:"clientToolPermission"`
 	RateLimitCooldownSeconds   int            `json:"rateLimitCooldownSeconds"`
 	Scenario                   string         `json:"scenario"`
 	MaxConversationMessages    int            `json:"maxConversationMessages"`
@@ -100,6 +102,8 @@ func defaultRuntimeSettings() runtimeSettings {
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
 		ModelMappings:              append([]modelMapping(nil), defaultModelMappings...),
 		ToolPlanningMode:           toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		AutoClientToolUse:          os.Getenv("M365_AUTO_CLIENT_TOOL_USE") != "false",
+		ClientToolPermission:       firstNonEmptySetting(os.Getenv("M365_CLIENT_TOOL_PERMISSION"), "default"),
 		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
 		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
 		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 600),
@@ -167,6 +171,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.LogLevel != "silent" && v.LogLevel != "error" && v.LogLevel != "warn" && v.LogLevel != "info" && v.LogLevel != "debug" {
 		return fmt.Errorf("日志等级必须为 silent、error、warn、info 或 debug")
+	}
+	if v.ClientToolPermission != "default" && v.ClientToolPermission != "auto_review" && v.ClientToolPermission != "full_access" {
+		return fmt.Errorf("clientToolPermission must be default, auto_review, or full_access")
 	}
 	if err := outbound.ValidateProxyURL(v.OutboundProxy); err != nil {
 		return err

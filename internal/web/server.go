@@ -1861,6 +1861,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	planningMode := s.settings.get().ToolPlanningMode
 	toolCfg := s.settings.get()
+	if toolCfg.AutoClientToolUse && toolCfg.ClientToolPermission != "default" && localToolIntent(answerPrompt) && hasClientWorkspaceTool(toolMaps) && (body.ToolChoice == nil || fmt.Sprint(body.ToolChoice) == "auto") {
+		body.ToolChoice = "required"
+		log.Printf("[client-tools] forced tool request permission=%s", toolCfg.ClientToolPermission)
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()

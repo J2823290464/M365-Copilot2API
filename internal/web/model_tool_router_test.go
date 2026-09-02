@@ -31,3 +31,19 @@ func TestParseModelToolDecisionRejectsBadSchema(t *testing.T) {
 		t.Fatalf("calls=%v ok=%v", calls, ok)
 	}
 }
+
+func TestLocalToolIntent(t *testing.T) {
+	if !localToolIntent("请检查 C:\\Workspace\\demo 项目源码") {
+		t.Fatal("expected local task intent")
+	}
+	if localToolIntent("解释一下什么是接口") {
+		t.Fatal("unexpected local task intent")
+	}
+}
+
+func TestHasClientWorkspaceTool(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "read_file"}}}
+	if !hasClientWorkspaceTool(tools) {
+		t.Fatal("expected client workspace tool")
+	}
+}
