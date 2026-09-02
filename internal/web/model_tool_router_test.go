@@ -47,3 +47,17 @@ func TestHasClientWorkspaceTool(t *testing.T) {
 		t.Fatal("expected client workspace tool")
 	}
 }
+
+func TestHasClientWorkspaceToolRejectsBroadCodeNames(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "code_interpreter"}}}
+	if hasClientWorkspaceTool(tools) {
+		t.Fatal("code_interpreter must not be treated as a client workspace tool")
+	}
+}
+
+func TestHasClientWorkspaceToolAcceptsExplicitMetadata(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "run_task", "metadata": map[string]any{"execution_target": "client"}}}}
+	if !hasClientWorkspaceTool(tools) {
+		t.Fatal("explicit client metadata was not recognized")
+	}
+}

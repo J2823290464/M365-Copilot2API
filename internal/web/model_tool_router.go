@@ -109,14 +109,69 @@ func localToolIntent(prompt string) bool {
 
 func hasClientWorkspaceTool(tools []map[string]any) bool {
 	for _, tool := range tools {
-		fn, _ := tool["function"].(map[string]any)
-		name, _ := fn["name"].(string)
-		low := strings.ToLower(name)
-		for _, keyword := range []string{"exec", "shell", "terminal", "file", "directory", "workspace", "code", "patch"} {
-			if strings.Contains(low, keyword) {
-				return true
-			}
+		if isExplicitClientWorkspaceTool(tool) {
+			return true
 		}
 	}
 	return false
+}
+
+func isExplicitClientWorkspaceTool(tool map[string]any) bool {
+	for _, key := range []string{"client_side", "clientSide", "local", "workspace", "requires_client", "requiresClient"} {
+		if value, ok := tool[key].(bool); ok && value {
+			return true
+		}
+	}
+	for _, key := range []string{"execution_target", "executionTarget", "tool_scope", "toolScope", "target"} {
+		if value, ok := tool[key].(string); ok && isClientWorkspaceTarget(value) {
+			return true
+		}
+	}
+	for _, key := range []string{"metadata", "annotations"} {
+		if value, ok := tool[key].(map[string]any); ok && isExplicitClientWorkspaceTool(value) {
+			return true
+		}
+	}
+	toolType, _ := tool["type"].(string)
+	if isClientWorkspaceType(toolType) {
+		return true
+	}
+	fn, _ := tool["function"].(map[string]any)
+	if fn != nil {
+		if isExplicitClientWorkspaceTool(fn) {
+			return true
+		}
+		name, _ := fn["name"].(string)
+		if isClientWorkspaceName(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func isClientWorkspaceTarget(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "client", "client_side", "local", "workspace", "local_workspace":
+		return true
+	default:
+		return false
+	}
+}
+
+func isClientWorkspaceType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "client_tool", "local_tool", "workspace_tool", "client_function":
+		return true
+	default:
+		return false
+	}
+}
+
+func isClientWorkspaceName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "exec", "execute", "shell", "terminal", "powershell", "bash", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "list_files", "search_files", "search_code", "run_test", "run_tests":
+		return true
+	default:
+		return false
+	}
 }
