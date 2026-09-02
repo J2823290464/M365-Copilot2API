@@ -39,6 +39,7 @@ type sessionBinding struct {
 	// ExplicitID is the client-supplied X-M365-Session-Id. It is namespaced per
 	// tenant via byExplicit so two tenants may use the same id without colliding.
 	ExplicitID string `json:"explicitId,omitempty"`
+	ProjectID  string `json:"projectId,omitempty"`
 }
 
 type sessionResolver struct {
@@ -125,7 +126,7 @@ func (sr *sessionResolver) flush() error {
 func (sr *sessionResolver) reindexLocked(s sessionBinding) {
 	sr.sessions[s.SessionID] = s
 	if s.ExplicitID != "" {
-		sr.byExplicit[explicitKey(s.Tenant, s.ExplicitID)] = s.SessionID
+		sr.byExplicit[sessionBindingKey(s.Tenant, s.ProjectID, s.ExplicitID)] = s.SessionID
 	}
 	if s.UserField != "" {
 		sr.byUserField[s.UserField] = s.SessionID
@@ -163,7 +164,7 @@ func (sr *sessionResolver) evictLocked() {
 func (sr *sessionResolver) dropLocked(id string, s sessionBinding) {
 	delete(sr.sessions, id)
 	if s.ExplicitID != "" {
-		delete(sr.byExplicit, explicitKey(s.Tenant, s.ExplicitID))
+		delete(sr.byExplicit, sessionBindingKey(s.Tenant, s.ProjectID, s.ExplicitID))
 	}
 	if sr.byUserField[s.UserField] == id {
 		delete(sr.byUserField, s.UserField)
@@ -219,12 +220,13 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	sr.evictLocked()
 
 	tenant := tenantFromRequest(r)
-	explicitID := r.Header.Get("X-M365-Session-Id")
+	projectID := projectIDFromRequest(r, body)
+	explicitID := sessionIDFromRequest(r, body)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
 	if explicitID != "" {
-		if sessID, ok := sr.byExplicit[explicitKey(tenant, explicitID)]; ok {
+		if sessID, ok := sr.byExplicit[sessionBindingKey(tenant, projectID, explicitID)]; ok {
 			if sess, ok := sr.sessions[sessID]; ok && sess.Tenant == tenant {
 				sess.LastUsedAt = time.Now().UTC()
 				sr.sessions[sessID] = sess
@@ -245,7 +247,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
 	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
 	ipFinger := clientIPFingerprint(r)
-	if bestID, n := sr.matchContextLocked(tenant, ipFinger, body.Messages); bestID != "" {
+	if bestID, n := sr.matchContextLocked(tenant, projectID, ipFinger, body.Messages); bestID != "" {
 		sess := sr.sessions[bestID]
 		sess.LastUsedAt = time.Now().UTC()
 		sr.sessions[bestID] = sess
@@ -262,7 +264,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 
 	// 寮辩害鏉熷厹搴曪細鍐呭涓嶆瀯鎴愪弗鏍煎墠缂€锛屼絾涓庢煇涓巻鍙查珮搴︾浉浼硷紙濡傚鎴风
 	// 鏈湴鎴柇浜嗗巻鍙诧級锛屼粛澶嶇敤璇ヤ細璇濄€傛鏃跺閲忚竟鐣屾湭鐭ワ紝涓婂眰鍙戦€佸叏閲忋€?
-	suffixID, suffixN := sr.matchSuffixLocked(tenant, ipFinger, body.Messages)
+	suffixID, suffixN := sr.matchSuffixLocked(tenant, projectID, ipFinger, body.Messages)
 	if suffixID != "" {
 		sess := sr.sessions[suffixID]
 		sess.LastUsedAt = time.Now().UTC()
@@ -281,7 +283,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	return ResolveResult{IsNew: true}
 }
 
-func (sr *sessionResolver) matchSuffixLocked(tenant, ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchSuffixLocked(tenant, projectID, ipFinger string, messages []oaiMsg) (string, int) {
 	if len(messages) < 2 {
 		return "", 0
 	}
@@ -297,6 +299,9 @@ func (sr *sessionResolver) matchSuffixLocked(tenant, ipFinger string, messages [
 			continue
 		}
 		if sess.Tenant != tenant {
+			continue
+		}
+		if sess.ProjectID != projectID {
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
@@ -333,7 +338,7 @@ func suffixMatchLen(hist, msgs []oaiMsg) int {
 // matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
 // 閭ｄ釜浼氳瘽锛涘彧閫夊墠缂€鏈€闀跨殑涓€涓紝閬垮厤鐭墠缂€鍦ㄤ笉鍚屼細璇濋棿浜掓挒銆傝繑鍥?
 // (sessionID, 鍖归厤鍒扮殑娑堟伅鏉℃暟)銆?
-func (sr *sessionResolver) matchContextLocked(tenant, ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchContextLocked(tenant, projectID, ipFinger string, messages []oaiMsg) (string, int) {
 	if len(messages) == 0 {
 		return "", 0
 	}
@@ -348,6 +353,9 @@ func (sr *sessionResolver) matchContextLocked(tenant, ipFinger string, messages 
 			continue
 		}
 		if sess.Tenant != tenant {
+			continue
+		}
+		if sess.ProjectID != projectID {
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
@@ -442,7 +450,8 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	if strings.TrimSpace(assistantText) != "" {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
-	explicitID := r.Header.Get("X-M365-Session-Id")
+	projectID := projectIDFromRequest(r, body)
+	explicitID := sessionIDFromRequest(r, body)
 
 	// Locate an existing binding to update in place, scoped to this tenant:
 	// prefer the tenant-namespaced explicit id, then any binding this tenant
@@ -451,7 +460,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	// and never merges into another tenant's binding.
 	targetKey := ""
 	if explicitID != "" {
-		if k, ok := sr.byExplicit[explicitKey(tenant, explicitID)]; ok {
+		if k, ok := sr.byExplicit[sessionBindingKey(tenant, projectID, explicitID)]; ok {
 			if sess, ok := sr.sessions[k]; ok && sess.Tenant == tenant {
 				targetKey = k
 			}
@@ -459,7 +468,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	}
 	if targetKey == "" && conversationID != "" {
 		for k, sess := range sr.sessions {
-			if sess.Tenant == tenant && sess.ConversationID == conversationID {
+			if sess.Tenant == tenant && sess.ProjectID == projectID && sess.ConversationID == conversationID {
 				targetKey = k
 				break
 			}
@@ -475,6 +484,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		sess.ContextFinger = contextFingerprint(history)
 		sess.ContextHistory = history
 		sess.Tenant = tenant
+		sess.ProjectID = projectID
 		if explicitID != "" {
 			sess.ExplicitID = explicitID
 		}
@@ -498,6 +508,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		ContextHistory: history,
 		Tenant:         tenant,
 		ExplicitID:     explicitID,
+		ProjectID:      projectID,
 	}
 	sr.reindexLocked(sess)
 	sr.persist.markDirty()
@@ -518,12 +529,31 @@ func (sr *sessionResolver) lookupForTenantLocked(tenant, id string) (sessionBind
 	if s, ok := sr.sessions[id]; ok && s.Tenant == tenant {
 		return s, true
 	}
-	if k, ok := sr.byExplicit[explicitKey(tenant, id)]; ok {
+	if k, ok := sr.byExplicit[sessionBindingKey(tenant, "", id)]; ok {
 		if s, ok := sr.sessions[k]; ok && s.Tenant == tenant {
 			return s, true
 		}
 	}
+	for _, projectID := range sr.projectIDsForTenantLocked(tenant) {
+		if k, ok := sr.byExplicit[sessionBindingKey(tenant, projectID, id)]; ok {
+			if s, ok := sr.sessions[k]; ok && s.Tenant == tenant {
+				return s, true
+			}
+		}
+	}
 	return sessionBinding{}, false
+}
+
+func (sr *sessionResolver) projectIDsForTenantLocked(tenant string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, sess := range sr.sessions {
+		if sess.Tenant == tenant && sess.ProjectID != "" && !seen[sess.ProjectID] {
+			seen[sess.ProjectID] = true
+			ids = append(ids, sess.ProjectID)
+		}
+	}
+	return ids
 }
 
 func (sr *sessionResolver) GetConversation(conversationID string) (sessionBinding, bool) {
@@ -620,6 +650,41 @@ func cloneMessages(msgs []oaiMsg) []oaiMsg {
 }
 
 func explicitKey(tenant, id string) string { return tenant + "\x00" + id }
+
+func sessionBindingKey(tenant, projectID, sessionID string) string {
+	return explicitKey(tenant, projectID+"\x00"+sessionID)
+}
+
+const projectHeaderName = "X-M365-Project-Id"
+
+func projectIDFromRequest(r *http.Request, body *oaiReq) string {
+	for _, name := range []string{"X-M365-Project-Id", "X-Project-Id", "X-Workspace-Id", "X-Codex-Workspace-Id", "X-Claude-Workspace-Id"} {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	if body != nil && body.Metadata != nil {
+		return firstNonEmpty(body.Metadata.ProjectID, body.Metadata.ProjectIDC, body.Metadata.WorkspaceID, body.Metadata.WorkspaceIDC)
+	}
+	return ""
+}
+
+func sessionIDFromRequest(r *http.Request, body *oaiReq) string {
+	for _, name := range []string{"X-M365-Session-Id", "X-Session-Id", "X-Thread-Id", "X-Codex-Thread-Id", "X-Claude-Session-Id"} {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	if body != nil {
+		if body.Metadata != nil {
+			if value := firstNonEmpty(body.Metadata.SessionID, body.Metadata.SessionIDC, body.Metadata.ThreadID, body.Metadata.ThreadIDC); value != "" {
+				return value
+			}
+		}
+		return firstNonEmpty(body.SessionKey, body.SessionID, body.SessionIDC)
+	}
+	return ""
+}
 
 // tenantFromRequest derives a stable, non-reversible tenant identifier from the
 // caller's API key so per-caller session state is isolated. Returns "" when no

@@ -1504,7 +1504,16 @@ type oaiReq struct {
 }
 
 type oaiMetadata struct {
-	CopilotTempSession bool `json:"copilot_temp_session"`
+	CopilotTempSession bool   `json:"copilot_temp_session"`
+	ProjectID          string `json:"project_id,omitempty"`
+	ProjectIDC         string `json:"projectId,omitempty"`
+	WorkspaceID        string `json:"workspace_id,omitempty"`
+	WorkspaceIDC       string `json:"workspaceId,omitempty"`
+	SessionID          string `json:"session_id,omitempty"`
+	SessionIDC         string `json:"sessionId,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"`
+	ThreadIDC          string `json:"threadId,omitempty"`
+	Client             string `json:"client,omitempty"`
 }
 
 func (r *oaiReq) shouldSendStreamUsage() bool {
