@@ -1087,7 +1087,13 @@ func (s *Server) resolveAccountWithReservation(accountID string, newSession bool
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 	if accountID != "" {
-		return s.tokens.EnsureValid(accountID)
+		acc, err := s.tokens.EnsureValid(accountID)
+		if err == nil {
+			s.mu.Lock()
+			s.lastHealthyAccount = accountID
+			s.mu.Unlock()
+		}
+		return acc, err
 	}
 	acc, err := s.resolveNewSessionAccount()
 	if err == nil {
