@@ -45,6 +45,8 @@ type runtimeSettings struct {
 	MaxToolCallsPerTurn        int            `json:"maxToolCallsPerTurn"`
 	MaxToolRounds              int            `json:"maxToolRounds"`
 	ContextWindow              int            `json:"contextWindow"`
+	AgentContextWindow         int            `json:"agentContextWindow"`
+	AutoContextCompression     bool           `json:"autoContextCompression"`
 	MaxOutputTokens            int            `json:"maxOutputTokens"`
 	ChatTimeoutSeconds         int            `json:"chatTimeoutSeconds"`
 	ImageTimeoutSeconds        int            `json:"imageTimeoutSeconds"`
@@ -92,10 +94,25 @@ func envInt(name string, fallback int) int {
 	}
 	return fallback
 }
+func envBool(name string, fallback bool) bool {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
-		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
+		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), AgentContextWindow: envInt("M365_AGENT_CONTEXT_WINDOW", 32768), AutoContextCompression: envBool("M365_AUTO_CONTEXT_COMPRESSION", true), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),

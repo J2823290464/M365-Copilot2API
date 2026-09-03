@@ -103,6 +103,13 @@ func (s *Server) accountAvailable(accountID string) bool {
 	return s.accountPool.Available(accountID) && s.accountConcurrency.Available(accountID)
 }
 
+func (s *Server) activeSessionCounts() map[string]int {
+	if s == nil || s.sessionResolver == nil {
+		return map[string]int{}
+	}
+	return s.sessionResolver.ActiveSessionCounts()
+}
+
 func (s *Server) accountClient(accountID string) *chathub.Client {
 	if acc, ok := s.tokens.Get(accountID); ok && acc.BoundProxy != "" {
 		return s.clientForProxy(acc.BoundProxy)

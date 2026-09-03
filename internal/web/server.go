@@ -175,6 +175,7 @@ type Server struct {
 	generatedImages        map[string]generatedImage
 	convCache              *conversationCache
 	lastHealthyAccount     string
+	sessionReservations    map[string]int
 	transientMu            sync.Mutex
 	transientConversations map[string]time.Time
 }
@@ -272,6 +273,7 @@ func New() (*Server, error) {
 		usage:                openUsageLog(),
 		generatedImages:      map[string]generatedImage{},
 		convCache:            newConversationCache(),
+		sessionReservations:  map[string]int{},
 	}, nil
 }
 
@@ -1075,45 +1077,151 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) resolveAccountWithReservation(accountID string, newSession bool) (auth.AccountToken, func(), error) {
+	if accountID != "" || !newSession {
+		acc, err := s.resolveAccount(accountID)
+		return acc, func() {}, err
+	}
+	return s.resolveNewSessionAccountWithReservation()
+}
+
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
-	if accountID == "" {
-		// Failover mode: prefer the last healthy account, only rotate on failure
-		s.mu.Lock()
-		preferred := s.lastHealthyAccount
-		s.mu.Unlock()
-		if preferred != "" && s.accountAvailable(preferred) && s.accountPool.Available(preferred) && s.accountConcurrency.Available(preferred) {
-			if acc, err := s.tokens.EnsureValid(preferred); err == nil {
-				accountID = preferred
-				return acc, nil
-			}
+	if accountID != "" {
+		acc, err := s.tokens.EnsureValid(accountID)
+		if err == nil {
+			s.mu.Lock()
+			s.lastHealthyAccount = accountID
+			s.mu.Unlock()
 		}
-		// No preferred account or it's unavailable; fall back to round-robin
+		return acc, err
+	}
+	acc, err := s.resolveNewSessionAccount()
+	if err == nil {
+		return acc, nil
+	}
+	return s.resolveHealthyAccount()
+}
+
+func (s *Server) resolveNewSessionAccount() (auth.AccountToken, error) {
+	acc, release, err := s.resolveNewSessionAccountWithReservation()
+	release()
+	return acc, err
+}
+
+func (s *Server) resolveNewSessionAccountWithReservation() (auth.AccountToken, func(), error) {
+	accounts := s.tokens.List()
+	if len(accounts) == 0 {
+		return auth.AccountToken{}, func() {}, fmt.Errorf("no accounts; login first")
+	}
+	counts := s.activeSessionCounts()
+	ordered := make([]auth.AccountToken, 0, len(accounts))
+	for i := 0; i < len(accounts); i++ {
 		acc, ok := s.tokens.Next()
 		if !ok {
-			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+			break
 		}
-		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
-			acc, ok = s.tokens.Next()
-			if !ok {
+		ordered = append(ordered, acc)
+	}
+
+	s.mu.Lock()
+	if s.sessionReservations == nil {
+		s.sessionReservations = map[string]int{}
+	}
+	preferred := s.lastHealthyAccount
+	minLoad := -1
+	for _, acc := range ordered {
+		if !s.accountAvailable(acc.ID) {
+			continue
+		}
+		load := counts[acc.ID] + s.sessionReservations[acc.ID]
+		if minLoad < 0 || load < minLoad {
+			minLoad = load
+		}
+	}
+	selectedID := ""
+	if minLoad > 0 {
+		for _, acc := range ordered {
+			if acc.ID == preferred && counts[acc.ID]+s.sessionReservations[acc.ID] == minLoad && s.accountAvailable(acc.ID) {
+				selectedID = acc.ID
 				break
 			}
-			accountID = acc.ID
 		}
-		if !s.tokens.ScheduleEnabled(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
-		}
-		if !s.accountPool.Available(accountID) {
-			until := s.accountPool.EarliestRecovery()
-			retry := int(time.Until(until).Seconds())
-			if retry < 5 {
-				retry = 5
+	}
+	if selectedID == "" {
+		for _, acc := range ordered {
+			if counts[acc.ID]+s.sessionReservations[acc.ID] == minLoad && s.accountAvailable(acc.ID) {
+				selectedID = acc.ID
+				break
 			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
 		}
-		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
+	}
+	if selectedID != "" {
+		s.sessionReservations[selectedID]++
+	}
+	s.mu.Unlock()
+	if selectedID == "" {
+		return auth.AccountToken{}, func() {}, fmt.Errorf("no healthy account available")
+	}
+
+	released := false
+	release := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if released {
+			return
 		}
+		released = true
+		if s.sessionReservations[selectedID] <= 1 {
+			delete(s.sessionReservations, selectedID)
+		} else {
+			s.sessionReservations[selectedID]--
+		}
+	}
+	validated, err := s.tokens.EnsureValid(selectedID)
+	if err != nil {
+		release()
+		return auth.AccountToken{}, func() {}, err
+	}
+	s.mu.Lock()
+	s.lastHealthyAccount = selectedID
+	s.mu.Unlock()
+	return validated, release, nil
+}
+
+func (s *Server) resolveHealthyAccount() (auth.AccountToken, error) {
+	s.mu.Lock()
+	preferred := s.lastHealthyAccount
+	s.mu.Unlock()
+	if preferred != "" && s.accountAvailable(preferred) {
+		if acc, err := s.tokens.EnsureValid(preferred); err == nil {
+			return acc, nil
+		}
+	}
+	acc, ok := s.tokens.Next()
+	if !ok {
+		return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+	}
+	accountID := acc.ID
+	for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
+		acc, ok = s.tokens.Next()
+		if !ok {
+			break
+		}
+		accountID = acc.ID
+	}
+	if !s.tokens.ScheduleEnabled(accountID) {
+		return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
+	}
+	if !s.accountPool.Available(accountID) {
+		until := s.accountPool.EarliestRecovery()
+		retry := int(time.Until(until).Seconds())
+		if retry < 5 {
+			retry = 5
+		}
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
+	}
+	if !s.accountConcurrency.Available(accountID) {
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
 	}
 	result, err := s.tokens.EnsureValid(accountID)
 	if err == nil {
@@ -1240,7 +1348,9 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	newSession := body.AccountID == "" && body.ConversationID == ""
+	acc, releaseAccount, err := s.resolveAccountWithReservation(body.AccountID, newSession)
+	defer releaseAccount()
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -1691,6 +1801,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	normalizeLegacyTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
+	fullMessages := append([]oaiMsg(nil), body.Messages...)
+
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
@@ -1706,11 +1818,38 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
 		return
 	}
-	// Context budget sliding window: B = ContextWindow - MaxOutput - 512, atom-aware.
+	// Context compression and budget sliding window: B = ContextWindow - MaxOutput - 512.
 	cfgBudget := s.settings.get()
 	budget := cfgBudget.ContextWindow - cfgBudget.MaxOutputTokens - 512
+	modelLower := strings.ToLower(body.Model)
+	isAgentRequest := len(body.Tools) > 0 || strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "codex")
+	if isAgentRequest && cfgBudget.AgentContextWindow > 0 && cfgBudget.AgentContextWindow < budget {
+		budget = cfgBudget.AgentContextWindow
+	}
 	if budget < 1024 {
 		budget = 1024
+	}
+	_, wouldTruncate, budgetErr := slidingWindow(body.Messages, budget)
+	if budgetErr != nil {
+		w.Header().Set("X-M365-Context-Truncated", "1")
+		writeOpenAIError(w, 400, "context_length_exceeded", budgetErr.Error())
+		return
+	}
+	if cfgBudget.AutoContextCompression && wouldTruncate {
+		if compressionAccount, compressionErr := s.resolveAccount(body.AccountID); compressionErr == nil {
+			if compressionAccount.OID == "" || compressionAccount.TID == "" {
+				if oid, tid := extractOIDTID(compressionAccount.AccessToken); oid != "" {
+					compressionAccount.OID, compressionAccount.TID = oid, tid
+				}
+			}
+			if compressionAccount.OID != "" && compressionAccount.TID != "" {
+				compressedMessages, compressed := s.autoCompressContext(r.Context(), compressionAccount.ID, chathub.Account{AccessToken: compressionAccount.AccessToken, OID: compressionAccount.OID, TID: compressionAccount.TID}, body.Messages, tone, cfgBudget.LicenseType, cfgBudget.Scenario)
+				if compressed {
+					body.Messages = compressedMessages
+					w.Header().Set("X-M365-Context-Compressed", "1")
+				}
+			}
+		}
 	}
 	if truncatedMsgs, truncated, budgetErr := slidingWindow(body.Messages, budget); budgetErr != nil {
 		w.Header().Set("X-M365-Context-Truncated", "1")
@@ -1718,10 +1857,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if truncated {
 		w.Header().Set("X-M365-Context-Truncated", "1")
-		log.Printf("[context-budget] id=%s truncated original=%d budget=%d truncated_msgs=%d", requestID, len(body.Messages), budget, len(truncatedMsgs))
+		log.Printf("[context-budget] id=%s truncated original=%d budget=%d agent=%t truncated_msgs=%d", requestID, len(body.Messages), budget, isAgentRequest, len(truncatedMsgs))
 		body.Messages = truncatedMsgs
-	}
-	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
+	} // Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
 	var prompt string
@@ -1800,7 +1938,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accountID := body.AccountID
-	acc, err := s.resolveAccount(accountID)
+	newSession := accountID == "" && body.ConversationID == ""
+	acc, releaseAccount, err := s.resolveAccountWithReservation(accountID, newSession)
+	defer releaseAccount()
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
 		writeUpstreamErrorWithAccount(w, err, accountID)
@@ -1825,10 +1965,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
 	if body.ConversationID == "" && len(body.Messages) > 1 &&
 		(body.Metadata == nil || !body.Metadata.CopilotTempSession) {
-		sysHash := systemPromptHash(body.Messages)
-		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
-			if len(body.Messages) > cached.MessageCount {
-				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
+		sessionFinger := sessionFingerprint(fullMessages)
+		if cached := s.convCache.Lookup(acc.ID, convCacheModel, sessionFinger); cached != nil {
+			if len(fullMessages) > cached.MessageCount {
+				incPrompt, incAtt := flattenPromptMessages(fullMessages[cached.MessageCount:], nil)
 				incPrompt = strings.TrimSpace(incPrompt)
 				if incPrompt != "" {
 					body.ConversationID = cached.ConversationID
@@ -2194,7 +2334,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+			s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 			return
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
@@ -2213,7 +2353,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -2542,7 +2682,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 		return
 	}
 
@@ -2555,7 +2695,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
