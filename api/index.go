@@ -30,6 +30,10 @@ func initServer() {
 	if os.Getenv("M365_DATA_DIR") == "" {
 		os.Setenv("M365_DATA_DIR", "/tmp/m365-copilot2api")
 	}
+	if err := web.ApplyTimezoneEnv(); err != nil {
+		initErr = err
+		return
+	}
 	web.ApplyStartupSettingsEnv()
 	if err := outbound.ConfigureFromEnv(); err != nil {
 		initErr = err

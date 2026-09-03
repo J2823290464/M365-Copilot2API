@@ -28,6 +28,8 @@ RUN chown -R m365:m365 /app /data
 USER m365
 EXPOSE 4141
 ENV M365_LISTEN=0.0.0.0:4141 \
+    M365_TIMEZONE=Asia/Shanghai \
+    TZ=Asia/Shanghai \
     M365_DATA_DIR=/data \
     M365_CONFIG=/data/accounts.json \
     M365_TOKEN_CACHE=/data/token-cache.json \

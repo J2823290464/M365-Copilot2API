@@ -20,6 +20,9 @@ func main() {
 			os.Chdir(dir)
 		}
 	}
+	if err := web.ApplyTimezoneEnv(); err != nil {
+		log.Fatal(err)
+	}
 	web.ApplyStartupSettingsEnv()
 	if err := outbound.ConfigureFromEnv(); err != nil {
 		log.Fatalf("configure outbound proxy: %v", err)
