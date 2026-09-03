@@ -146,7 +146,7 @@ func (sr *sessionResolver) evictLocked() {
 			sr.dropLocked(id, s)
 		}
 	}
-	if len(sr.sessions) > sr.maxSessions {
+	if sr.maxSessions > 0 && len(sr.sessions) > sr.maxSessions {
 		// Bound memory by dropping the least recently used sessions.
 		ids := make([]string, 0, len(sr.sessions))
 		last := make(map[string]time.Time, len(sr.sessions))
@@ -579,6 +579,24 @@ func (sr *sessionResolver) ListSessions() []sessionBinding {
 		return out[i].LastUsedAt.After(out[j].LastUsedAt)
 	})
 	return out
+}
+
+func (sr *sessionResolver) ActiveSessionCounts() map[string]int {
+	if sr == nil {
+		return map[string]int{}
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.evictLocked()
+	now := time.Now().UTC()
+	counts := make(map[string]int)
+	for _, sess := range sr.sessions {
+		if sess.AccountID == "" || now.Sub(sess.LastUsedAt) > sr.contextTTL {
+			continue
+		}
+		counts[sess.AccountID]++
+	}
+	return counts
 }
 
 func (sr *sessionResolver) DeleteSession(tenant, sessionID string) bool {

@@ -427,3 +427,71 @@ func TestAccountHealthMeteringDefaultsDeepCopySnapshotAndReset(t *testing.T) {
 		t.Fatalf("reset left metering state: error=%q access=%v remaining=%v", meterError, hasAccess, remaining)
 	}
 }
+
+func TestResolveAccountPrefersAccountWithoutActiveSession(t *testing.T) {
+	store := testAccountFiles(t)
+	now := time.Now().UTC()
+	s := &Server{
+		tokens:             store,
+		accountPool:        newAccountHealth(),
+		accountConcurrency: newAccountConcurrency(),
+		sessionResolver: &sessionResolver{
+			sessions:   map[string]sessionBinding{"sess-a": {SessionID: "sess-a", AccountID: "u-1", LastUsedAt: now}},
+			contextTTL: time.Hour,
+			ttl:        time.Hour,
+		},
+	}
+	s.lastHealthyAccount = "u-1"
+	acc, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if acc.ID == "u-1" {
+		t.Fatalf("new session selected account with active session: %s", acc.ID)
+	}
+}
+
+func TestResolveAccountUsesHealthyStickyAccountWhenAllHaveSessions(t *testing.T) {
+	store := testAccountFiles(t)
+	now := time.Now().UTC()
+	s := &Server{
+		tokens:             store,
+		accountPool:        newAccountHealth(),
+		accountConcurrency: newAccountConcurrency(),
+		sessionResolver: &sessionResolver{
+			sessions: map[string]sessionBinding{
+				"sess-a": {SessionID: "sess-a", AccountID: "u-1", LastUsedAt: now},
+				"sess-b": {SessionID: "sess-b", AccountID: "u-2", LastUsedAt: now},
+				"sess-c": {SessionID: "sess-c", AccountID: "u-3", LastUsedAt: now},
+			},
+			contextTTL: time.Hour,
+			ttl:        time.Hour,
+		},
+	}
+	s.lastHealthyAccount = "u-2"
+	acc, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if acc.ID != "u-2" {
+		t.Fatalf("sticky account=%s want u-2", acc.ID)
+	}
+}
+
+func TestNewSessionReservationDistributesConcurrentSelections(t *testing.T) {
+	store := testAccountFiles(t)
+	s := &Server{tokens: store, accountPool: newAccountHealth(), accountConcurrency: newAccountConcurrency()}
+	first, releaseFirst, err := s.resolveAccountWithReservation("", true)
+	if err != nil {
+		t.Fatalf("first selection: %v", err)
+	}
+	defer releaseFirst()
+	second, releaseSecond, err := s.resolveAccountWithReservation("", true)
+	if err != nil {
+		t.Fatalf("second selection: %v", err)
+	}
+	defer releaseSecond()
+	if first.ID == second.ID {
+		t.Fatalf("concurrent new sessions selected the same account: %s", first.ID)
+	}
+}
