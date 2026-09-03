@@ -97,3 +97,31 @@ func TestConversationTimestampPrefersUpdateTime(t *testing.T) {
 		t.Fatalf("timestamp=%d want %d", got, updated)
 	}
 }
+
+func TestFillConversationAccount(t *testing.T) {
+	row := map[string]any{"conversationId": "b45f81b5-7d7b-4e72-81fd-06601534d90e"}
+	fillConversationAccount(row, "account-a", "user@example.com")
+	if row["accountId"] != "account-a" || row["accountEmail"] != "user@example.com" {
+		t.Fatalf("account fields=%v", row)
+	}
+
+	row = map[string]any{"accountId": "upstream-id", "accountEmail": "upstream@example.com"}
+	fillConversationAccount(row, "account-a", "user@example.com")
+	if row["accountId"] != "upstream-id" || row["accountEmail"] != "upstream@example.com" {
+		t.Fatalf("existing account fields overwritten: %v", row)
+	}
+}
+
+func TestInternalConversationName(t *testing.T) {
+	for _, name := range []string{
+		"[system] x-anthropic-billing-header: cc_version=2.1",
+		"You are a tool selection assistant. Based on the user request",
+	} {
+		if !isInternalConversationName(name) {
+			t.Fatalf("name=%q was not recognized as internal", name)
+		}
+	}
+	if isInternalConversationName("Review README.md and summarize the deployment steps") {
+		t.Fatal("ordinary user conversation was classified as internal")
+	}
+}

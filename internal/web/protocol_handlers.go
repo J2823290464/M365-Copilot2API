@@ -24,8 +24,10 @@ import (
 // scheme matches session_resolver.explicitKey and userSessionStore.userKey.
 func responseNamespace(tenant, sessionID string) string { return tenant + "\x00" + sessionID }
 
-func responseSessionID(r *http.Request) string {
-	return strings.TrimSpace(r.Header.Get(sessionHeaderName))
+func responseSessionID(r *http.Request, body *oaiReq) string {
+	projectID := projectIDFromRequest(r, body)
+	sessionID := sessionIDFromRequest(r, body)
+	return projectID + "\x00" + sessionID
 }
 
 func tenantHashPrefix(tenant string) string {
@@ -85,6 +87,52 @@ func sessionHashPrefix(s string) string {
 	}
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])[:8]
+}
+
+func (s *Server) persistResponsesHistory(r *http.Request, body responsesRequest, o oaiReq, publicID string, text string, toolCalls []map[string]any) {
+	tenant := tenantFromRequest(r)
+	if tenant == "" {
+		if prefix := extractAPIKey(r); prefix != "" {
+			h := sha256.Sum256([]byte(prefix))
+			tenant = hex.EncodeToString(h[:])
+		} else {
+			tenant = "anonymous"
+		}
+	}
+	sessionID := responseSessionID(r, &o)
+	nsKey := responseNamespace(tenant, sessionID)
+	stored := append([]oaiMsg(nil), o.Messages...)
+	if len(toolCalls) > 0 {
+		stored = append(stored, oaiMsg{Role: "assistant", ToolCalls: toolCalls})
+	} else if strings.TrimSpace(text) != "" {
+		stored = append(stored, oaiMsg{Role: "assistant", Content: text})
+	}
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+	if s.responseMessages == nil {
+		s.responseMessages = map[string]map[string]*RespNode{}
+	}
+	bucket := s.responseMessages[nsKey]
+	if bucket == nil {
+		bucket = map[string]*RespNode{}
+		s.responseMessages[nsKey] = bucket
+	}
+	for k, h := range bucket {
+		if time.Since(h.At) > time.Hour {
+			delete(bucket, k)
+		}
+	}
+	if len(bucket) >= maxResponsesPerTenant {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, h := range bucket {
+			if oldestKey == "" || h.At.Before(oldestAt) {
+				oldestKey, oldestAt = k, h.At
+			}
+		}
+		delete(bucket, oldestKey)
+	}
+	bucket[publicID] = &RespNode{At: time.Now(), Messages: stored, ToolCalls: buildRespToolCallsMap(toolCalls), Version: 1, Consumed: false, ParentID: body.PreviousResponseID, Tenant: tenant, SessionID: sessionID}
 }
 
 type pipeResponseWriter struct {
@@ -273,7 +321,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			}
 			item := map[string]any{"type": "function_call", "id": st.ItemID, "call_id": st.ID, "name": st.Name, "arguments": st.Args, "status": "completed"}
 			output = append(output, item)
-			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": st.ItemID, "arguments": st.Args})
+			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": st.ItemID, "call_id": st.ID, "name": st.Name, "arguments": st.Args})
 			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 		}
 	} else {
@@ -292,6 +340,11 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	for _, call := range calls {
 		usageOutput += call.Name + call.Args
 	}
+	streamToolCalls := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		streamToolCalls = append(streamToolCalls, map[string]any{"id": call.ID, "type": call.Type, "function": map[string]any{"name": call.Name, "arguments": call.Args}})
+	}
+	s.persistResponsesHistory(r, responsesRequest{Model: model, PreviousResponseID: ""}, o, id, text.String(), streamToolCalls)
 	estimate := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOutput)
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
@@ -341,7 +394,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			tenant = "anonymous"
 		}
 	}
-	sessionID := responseSessionID(r)
+	sessionID := responseSessionID(r, &o)
 	nsKey := responseNamespace(tenant, sessionID)
 	if body.PreviousResponseID != "" {
 		toolIDs := extractResponsesToolOutputIDs(body.Input)
