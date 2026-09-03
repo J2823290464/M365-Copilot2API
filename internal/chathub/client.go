@@ -349,6 +349,7 @@ func NewClient() *Client {
 		HTTPHeader: h,
 		HTTPClient: outbound.HTTPClient(),
 		Dialer:     d,
+		Pool:       NewConnPool(d, h),
 	}
 }
 
