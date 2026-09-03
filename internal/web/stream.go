@@ -36,7 +36,9 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	newSession := body.AccountID == "" && body.ConversationID == ""
+	acc, releaseAccount, err := s.resolveAccountWithReservation(body.AccountID, newSession)
+	defer releaseAccount()
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
