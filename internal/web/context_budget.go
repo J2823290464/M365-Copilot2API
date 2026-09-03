@@ -1,7 +1,10 @@
 package web
 
 import (
+	"context"
 	"fmt"
+	"log"
+
 	"strings"
 
 	"m365-copilot2api/internal/chathub"
@@ -141,6 +144,77 @@ func flattenAtoms(atoms []contextAtom, attachments []chathub.Attachment) (string
 	return flattenPromptMessages(msgs, attachments)
 }
 
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	for limit > 0 && (value[limit]&0xc0) == 0x80 {
+		limit--
+	}
+	return value[:limit]
+}
+
+const contextSummaryPrompt = `Summarize the earlier conversation for another assistant. Preserve decisions, requirements, constraints, file paths, error messages, tool results, and unresolved tasks. Remove greetings, repetition, and narration. Be concise and factual. Do not answer the user's latest request. Return only the summary.`
+
+func splitContextForCompression(messages []oaiMsg) (system, oldHistory, currentTurn []oaiMsg, ok bool) {
+	lastUser := -1
+	for i, message := range messages {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			lastUser = i
+		}
+	}
+	if lastUser <= 0 {
+		return nil, nil, messages, false
+	}
+	for i, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role == "system" || role == "developer" {
+			system = append(system, message)
+			continue
+		}
+		if i < lastUser {
+			oldHistory = append(oldHistory, message)
+		} else {
+			currentTurn = append(currentTurn, message)
+		}
+	}
+	return system, oldHistory, currentTurn, len(oldHistory) > 0 && len(currentTurn) > 0
+}
+
+func (s *Server) autoCompressContext(ctx context.Context, accountID string, account chathub.Account, messages []oaiMsg, tone, licenseType, scenario string) ([]oaiMsg, bool) {
+	system, oldHistory, currentTurn, ok := splitContextForCompression(messages)
+	if !ok {
+		return messages, false
+	}
+	oldPrompt, _ := flattenPromptMessages(oldHistory, nil)
+	oldPrompt = strings.TrimSpace(oldPrompt)
+	if oldPrompt == "" {
+		return messages, false
+	}
+	if len(oldPrompt) > 24000 {
+		oldPrompt = truncateUTF8(oldPrompt, 24000)
+	}
+	result, err := s.chatWithAccount(ctx, accountID, account, chathub.Request{
+		Text:        contextSummaryPrompt + "\n\nEARLIER CONVERSATION:\n" + oldPrompt,
+		Tone:        tone,
+		LicenseType: licenseType,
+		Scenario:    scenario,
+	})
+	if result.ConversationID != "" {
+		s.dropTransientConversation(result.ConversationID)
+	}
+	if err != nil || strings.TrimSpace(result.Text) == "" {
+		log.Printf("[context-compress] failed account=%s err=%v", accountID, err)
+		return messages, false
+	}
+	summary := strings.TrimSpace(result.Text)
+	compressed := make([]oaiMsg, 0, len(system)+len(currentTurn)+1)
+	compressed = append(compressed, system...)
+	compressed = append(compressed, oaiMsg{Role: "system", Content: "[conversation summary]\n" + summary})
+	compressed = append(compressed, currentTurn...)
+	log.Printf("[context-compress] account=%s old_messages=%d summary_chars=%d", accountID, len(oldHistory), len(summary))
+	return compressed, true
+}
 func flattenPromptMessagesWithBudget(messages []oaiMsg, attachments []chathub.Attachment, budget int) (string, []chathub.Attachment, bool, error) {
 	truncatedMsgs, truncated, err := slidingWindow(messages, budget)
 	if err != nil {

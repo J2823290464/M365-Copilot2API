@@ -1674,6 +1674,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	normalizeLegacyTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
+	fullMessages := append([]oaiMsg(nil), body.Messages...)
+
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
@@ -1689,11 +1691,38 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
 		return
 	}
-	// Context budget sliding window: B = ContextWindow - MaxOutput - 512, atom-aware.
+	// Context compression and budget sliding window: B = ContextWindow - MaxOutput - 512.
 	cfgBudget := s.settings.get()
 	budget := cfgBudget.ContextWindow - cfgBudget.MaxOutputTokens - 512
+	modelLower := strings.ToLower(body.Model)
+	isAgentRequest := len(body.Tools) > 0 || strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "codex")
+	if isAgentRequest && cfgBudget.AgentContextWindow > 0 && cfgBudget.AgentContextWindow < budget {
+		budget = cfgBudget.AgentContextWindow
+	}
 	if budget < 1024 {
 		budget = 1024
+	}
+	_, wouldTruncate, budgetErr := slidingWindow(body.Messages, budget)
+	if budgetErr != nil {
+		w.Header().Set("X-M365-Context-Truncated", "1")
+		writeOpenAIError(w, 400, "context_length_exceeded", budgetErr.Error())
+		return
+	}
+	if cfgBudget.AutoContextCompression && wouldTruncate {
+		if compressionAccount, compressionErr := s.resolveAccount(body.AccountID); compressionErr == nil {
+			if compressionAccount.OID == "" || compressionAccount.TID == "" {
+				if oid, tid := extractOIDTID(compressionAccount.AccessToken); oid != "" {
+					compressionAccount.OID, compressionAccount.TID = oid, tid
+				}
+			}
+			if compressionAccount.OID != "" && compressionAccount.TID != "" {
+				compressedMessages, compressed := s.autoCompressContext(r.Context(), compressionAccount.ID, chathub.Account{AccessToken: compressionAccount.AccessToken, OID: compressionAccount.OID, TID: compressionAccount.TID}, body.Messages, tone, cfgBudget.LicenseType, cfgBudget.Scenario)
+				if compressed {
+					body.Messages = compressedMessages
+					w.Header().Set("X-M365-Context-Compressed", "1")
+				}
+			}
+		}
 	}
 	if truncatedMsgs, truncated, budgetErr := slidingWindow(body.Messages, budget); budgetErr != nil {
 		w.Header().Set("X-M365-Context-Truncated", "1")
@@ -1701,10 +1730,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if truncated {
 		w.Header().Set("X-M365-Context-Truncated", "1")
-		log.Printf("[context-budget] id=%s truncated original=%d budget=%d truncated_msgs=%d", requestID, len(body.Messages), budget, len(truncatedMsgs))
+		log.Printf("[context-budget] id=%s truncated original=%d budget=%d agent=%t truncated_msgs=%d", requestID, len(body.Messages), budget, isAgentRequest, len(truncatedMsgs))
 		body.Messages = truncatedMsgs
-	}
-	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
+	} // Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
 	var prompt string
@@ -1712,6 +1740,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
 	prompt = strings.TrimSpace(prompt)
+	if localTitleRequest(&body, prompt) {
+		log.Printf("[local-title] generated title without ChatHub")
+		writeLocalTitleResponse(w, firstNonEmpty(body.Model, "m365-copilot"), body.Messages)
+		return
+	}
 	if responseFormat != nil {
 		switch responseFormat.Type {
 		case "json_object":
@@ -1803,10 +1836,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
 	if body.ConversationID == "" && len(body.Messages) > 1 &&
 		(body.Metadata == nil || !body.Metadata.CopilotTempSession) {
-		sysHash := systemPromptHash(body.Messages)
-		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
-			if len(body.Messages) > cached.MessageCount {
-				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
+		sessionFinger := sessionFingerprint(fullMessages)
+		if cached := s.convCache.Lookup(acc.ID, convCacheModel, sessionFinger); cached != nil {
+			if len(fullMessages) > cached.MessageCount {
+				incPrompt, incAtt := flattenPromptMessages(fullMessages[cached.MessageCount:], nil)
 				incPrompt = strings.TrimSpace(incPrompt)
 				if incPrompt != "" {
 					body.ConversationID = cached.ConversationID
@@ -1934,6 +1967,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Stream {
 		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+		answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2158,7 +2192,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+			s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 			return
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
@@ -2177,7 +2211,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -2262,6 +2296,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+	answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
@@ -2505,7 +2540,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 		return
 	}
 
@@ -2518,7 +2553,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, fullMessages, convReused)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)

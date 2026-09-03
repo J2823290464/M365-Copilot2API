@@ -45,6 +45,8 @@ type runtimeSettings struct {
 	MaxToolCallsPerTurn        int            `json:"maxToolCallsPerTurn"`
 	MaxToolRounds              int            `json:"maxToolRounds"`
 	ContextWindow              int            `json:"contextWindow"`
+	AgentContextWindow         int            `json:"agentContextWindow"`
+	AutoContextCompression     bool           `json:"autoContextCompression"`
 	MaxOutputTokens            int            `json:"maxOutputTokens"`
 	ChatTimeoutSeconds         int            `json:"chatTimeoutSeconds"`
 	ImageTimeoutSeconds        int            `json:"imageTimeoutSeconds"`
@@ -62,6 +64,8 @@ type runtimeSettings struct {
 	Scope                      string         `json:"scope"`
 	ModelMappings              []modelMapping `json:"modelMappings"`
 	ToolPlanningMode           string         `json:"toolPlanningMode"`
+	AutoClientToolUse          bool           `json:"autoClientToolUse"`
+	ClientToolPermission       string         `json:"clientToolPermission"`
 	RateLimitCooldownSeconds   int            `json:"rateLimitCooldownSeconds"`
 	Scenario                   string         `json:"scenario"`
 	MaxConversationMessages    int            `json:"maxConversationMessages"`
@@ -90,16 +94,33 @@ func envInt(name string, fallback int) int {
 	}
 	return fallback
 }
+func envBool(name string, fallback bool) bool {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
-		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
+		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), AgentContextWindow: envInt("M365_AGENT_CONTEXT_WINDOW", 32768), AutoContextCompression: envBool("M365_AUTO_CONTEXT_COMPRESSION", true), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
 		ModelMappings:              append([]modelMapping(nil), defaultModelMappings...),
 		ToolPlanningMode:           toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		AutoClientToolUse:          os.Getenv("M365_AUTO_CLIENT_TOOL_USE") != "false",
+		ClientToolPermission:       firstNonEmptySetting(os.Getenv("M365_CLIENT_TOOL_PERMISSION"), "default"),
 		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
 		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
 		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 600),
@@ -167,6 +188,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.LogLevel != "silent" && v.LogLevel != "error" && v.LogLevel != "warn" && v.LogLevel != "info" && v.LogLevel != "debug" {
 		return fmt.Errorf("日志等级必须为 silent、error、warn、info 或 debug")
+	}
+	if v.ClientToolPermission != "default" && v.ClientToolPermission != "auto_review" && v.ClientToolPermission != "full_access" {
+		return fmt.Errorf("clientToolPermission must be default, auto_review, or full_access")
 	}
 	if err := outbound.ValidateProxyURL(v.OutboundProxy); err != nil {
 		return err
