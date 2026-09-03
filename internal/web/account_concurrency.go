@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -101,6 +103,13 @@ func (s *Server) accountAvailable(accountID string) bool {
 	return s.accountPool.Available(accountID) && s.accountConcurrency.Available(accountID)
 }
 
+func (s *Server) activeSessionCounts() map[string]int {
+	if s == nil || s.sessionResolver == nil {
+		return map[string]int{}
+	}
+	return s.sessionResolver.ActiveSessionCounts()
+}
+
 func (s *Server) accountClient(accountID string) *chathub.Client {
 	if acc, ok := s.tokens.Get(accountID); ok && acc.BoundProxy != "" {
 		return s.clientForProxy(acc.BoundProxy)
@@ -118,6 +127,7 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).Chat(ctx, account, request)
+	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
@@ -132,6 +142,7 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
+	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
@@ -146,6 +157,33 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err
+}
+
+func (s *Server) logChatHubUsage(request chathub.Request, result chathub.Result, err error) {
+	toolSchemaBytes := 0
+	if len(request.Tools) > 0 {
+		if data, marshalErr := json.Marshal(request.Tools); marshalErr == nil {
+			toolSchemaBytes = len(data)
+		}
+	}
+	tokenCount, _ := tokenEstimator("gpt-5.6-sol")
+	promptTokens := int64(tokenCount(request.Text))
+	completionTokens := int64(tokenCount(result.Text))
+	if result.Reasoning != "" {
+		completionTokens += int64(tokenCount(result.Reasoning))
+	}
+	if toolSchemaBytes > 0 {
+		promptTokens += int64(tokenCount(string(mustJSON(request.Tools))))
+	}
+	log.Printf("[chat-usage] chat_hub_call_id=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d tool_schema_bytes=%d history_bytes=%d status=%s", result.RequestID, promptTokens, completionTokens, promptTokens+completionTokens, toolSchemaBytes, request.HistoryBytes, usageStatus(err))
+}
+
+func usageStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }

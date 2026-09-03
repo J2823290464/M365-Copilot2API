@@ -175,6 +175,7 @@ type Server struct {
 	generatedImages        map[string]generatedImage
 	convCache              *conversationCache
 	lastHealthyAccount     string
+	sessionReservations    map[string]int
 	transientMu            sync.Mutex
 	transientConversations map[string]time.Time
 }
@@ -272,6 +273,7 @@ func New() (*Server, error) {
 		usage:                openUsageLog(),
 		generatedImages:      map[string]generatedImage{},
 		convCache:            newConversationCache(),
+		sessionReservations:  map[string]int{},
 	}, nil
 }
 
@@ -1075,45 +1077,145 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) resolveAccountWithReservation(accountID string, newSession bool) (auth.AccountToken, func(), error) {
+	if accountID != "" || !newSession {
+		acc, err := s.resolveAccount(accountID)
+		return acc, func() {}, err
+	}
+	return s.resolveNewSessionAccountWithReservation()
+}
+
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
-	if accountID == "" {
-		// Failover mode: prefer the last healthy account, only rotate on failure
-		s.mu.Lock()
-		preferred := s.lastHealthyAccount
-		s.mu.Unlock()
-		if preferred != "" && s.accountAvailable(preferred) && s.accountPool.Available(preferred) && s.accountConcurrency.Available(preferred) {
-			if acc, err := s.tokens.EnsureValid(preferred); err == nil {
-				accountID = preferred
-				return acc, nil
-			}
-		}
-		// No preferred account or it's unavailable; fall back to round-robin
+	if accountID != "" {
+		return s.tokens.EnsureValid(accountID)
+	}
+	acc, err := s.resolveNewSessionAccount()
+	if err == nil {
+		return acc, nil
+	}
+	return s.resolveHealthyAccount()
+}
+
+func (s *Server) resolveNewSessionAccount() (auth.AccountToken, error) {
+	acc, release, err := s.resolveNewSessionAccountWithReservation()
+	release()
+	return acc, err
+}
+
+func (s *Server) resolveNewSessionAccountWithReservation() (auth.AccountToken, func(), error) {
+	accounts := s.tokens.List()
+	if len(accounts) == 0 {
+		return auth.AccountToken{}, func() {}, fmt.Errorf("no accounts; login first")
+	}
+	counts := s.activeSessionCounts()
+	ordered := make([]auth.AccountToken, 0, len(accounts))
+	for i := 0; i < len(accounts); i++ {
 		acc, ok := s.tokens.Next()
 		if !ok {
-			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+			break
 		}
-		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
-			acc, ok = s.tokens.Next()
-			if !ok {
+		ordered = append(ordered, acc)
+	}
+
+	s.mu.Lock()
+	if s.sessionReservations == nil {
+		s.sessionReservations = map[string]int{}
+	}
+	preferred := s.lastHealthyAccount
+	minLoad := -1
+	for _, acc := range ordered {
+		if !s.accountAvailable(acc.ID) {
+			continue
+		}
+		load := counts[acc.ID] + s.sessionReservations[acc.ID]
+		if minLoad < 0 || load < minLoad {
+			minLoad = load
+		}
+	}
+	selectedID := ""
+	if minLoad > 0 {
+		for _, acc := range ordered {
+			if acc.ID == preferred && counts[acc.ID]+s.sessionReservations[acc.ID] == minLoad && s.accountAvailable(acc.ID) {
+				selectedID = acc.ID
 				break
 			}
-			accountID = acc.ID
 		}
-		if !s.tokens.ScheduleEnabled(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
-		}
-		if !s.accountPool.Available(accountID) {
-			until := s.accountPool.EarliestRecovery()
-			retry := int(time.Until(until).Seconds())
-			if retry < 5 {
-				retry = 5
+	}
+	if selectedID == "" {
+		for _, acc := range ordered {
+			if counts[acc.ID]+s.sessionReservations[acc.ID] == minLoad && s.accountAvailable(acc.ID) {
+				selectedID = acc.ID
+				break
 			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
 		}
-		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
+	}
+	if selectedID != "" {
+		s.sessionReservations[selectedID]++
+	}
+	s.mu.Unlock()
+	if selectedID == "" {
+		return auth.AccountToken{}, func() {}, fmt.Errorf("no healthy account available")
+	}
+
+	released := false
+	release := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if released {
+			return
 		}
+		released = true
+		if s.sessionReservations[selectedID] <= 1 {
+			delete(s.sessionReservations, selectedID)
+		} else {
+			s.sessionReservations[selectedID]--
+		}
+	}
+	validated, err := s.tokens.EnsureValid(selectedID)
+	if err != nil {
+		release()
+		return auth.AccountToken{}, func() {}, err
+	}
+	s.mu.Lock()
+	s.lastHealthyAccount = selectedID
+	s.mu.Unlock()
+	return validated, release, nil
+}
+
+func (s *Server) resolveHealthyAccount() (auth.AccountToken, error) {
+	s.mu.Lock()
+	preferred := s.lastHealthyAccount
+	s.mu.Unlock()
+	if preferred != "" && s.accountAvailable(preferred) {
+		if acc, err := s.tokens.EnsureValid(preferred); err == nil {
+			return acc, nil
+		}
+	}
+	acc, ok := s.tokens.Next()
+	if !ok {
+		return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+	}
+	accountID := acc.ID
+	for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
+		acc, ok = s.tokens.Next()
+		if !ok {
+			break
+		}
+		accountID = acc.ID
+	}
+	if !s.tokens.ScheduleEnabled(accountID) {
+		return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
+	}
+	if !s.accountPool.Available(accountID) {
+		until := s.accountPool.EarliestRecovery()
+		retry := int(time.Until(until).Seconds())
+		if retry < 5 {
+			retry = 5
+		}
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
+	}
+	if !s.accountConcurrency.Available(accountID) {
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
 	}
 	result, err := s.tokens.EnsureValid(accountID)
 	if err == nil {
@@ -1240,7 +1342,9 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	newSession := body.AccountID == "" && body.ConversationID == ""
+	acc, releaseAccount, err := s.resolveAccountWithReservation(body.AccountID, newSession)
+	defer releaseAccount()
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -1828,7 +1932,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accountID := body.AccountID
-	acc, err := s.resolveAccount(accountID)
+	newSession := accountID == "" && body.ConversationID == ""
+	acc, releaseAccount, err := s.resolveAccountWithReservation(accountID, newSession)
+	defer releaseAccount()
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
 		writeUpstreamErrorWithAccount(w, err, accountID)
