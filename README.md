@@ -258,7 +258,47 @@ python manage.py stop     # 停止服务
 
 ### Docker 部署
 
-> 官方不提供 Dockerfile。如需容器化部署，可自行基于预编译二进制或源码构建镜像，或在 Discussions 交流社区方案。
+项目已提供多阶段 `Dockerfile` 与 `docker-compose.yml`，默认仅绑定宿主机 `127.0.0.1:4141`，并将运行数据持久化到 `./data`。
+
+```bash
+cp .env.example .env
+mkdir -p data secrets
+printf '%s' '请替换为高强度初始密码' > secrets/m365_admin_password
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
+```
+
+如果构建时访问 `proxy.golang.org` 超时，Compose 默认会依次尝试 `goproxy.cn`、官方代理和直连。也可以在 `.env` 中将 `GOPROXY` 改为公司内部 Go module 代理，或临时执行：
+
+```bash
+GOPROXY=https://your-proxy.example.com,direct docker compose build --no-cache
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force data, secrets | Out-Null
+[System.IO.File]::WriteAllText("$PWD\secrets\m365_admin_password", "请替换为高强度初始密码")
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
+```
+
+启动后访问 `http://127.0.0.1:4141`。如需对局域网或公网直接开放，请在 `.env` 中将 `M365_DOCKER_PORT` 改为 `0.0.0.0:4141`，并在前置反向代理处配置 HTTPS、访问控制和限流。
+
+常用维护命令：
+
+```bash
+docker compose pull
+docker compose up -d --build
+docker compose restart
+docker compose down
+docker compose logs --tail=200
+```
+
+容器内置 `/api/health` 健康检查、JSON 日志轮转、非 root 用户运行、CA 证书和时区数据。管理员初始密码通过只读文件挂载传入，首次登录后应立即修改。`./data` 和 `./secrets` 已被 Git 与 Docker 构建上下文忽略，请勿提交其中内容。
 
 ### 初始化与第一次调用
 
@@ -321,6 +361,8 @@ python manage.py stop     # 停止服务
 | `M365_MAX_TOOL_CALLS_PER_TURN` | `1` | 单轮最多并行工具调用数（有副作用操作自动降为串行） |
 | `M365_MAX_TOOL_ROUNDS` | `16` | 单次请求最大工具轮次 |
 | `M365_CONTEXT_WINDOW` | `128000` | 上下文窗口 |
+| `M365_AGENT_CONTEXT_WINDOW` | `32768` | Agent/工具请求上下文窗口 |
+| `M365_AUTO_CONTEXT_COMPRESSION` | `true` | 超限时自动摘要旧历史，失败后回退裁剪 |
 | `M365_MAX_OUTPUT_TOKENS` | `16384` | 最大输出 Token |
 | `M365_CHAT_TIMEOUT_SECONDS` | `120` | 聊天超时（秒） |
 | `M365_IMAGE_TIMEOUT_SECONDS` | `150` | 图片处理超时（秒） |
@@ -342,7 +384,7 @@ python manage.py stop     # 停止服务
 |------|------|
 | `M365_TOKEN_CACHE` | Token 缓存文件（未设置时落到数据目录） |
 | `M365_SESSION_CACHE` | 会话绑定缓存文件（默认 `sessions.json`） |
-| `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `conversations.json`） |
+| `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `${M365_DATA_DIR}/conversations.json`） |
 | `M365_API_KEYS` | API Key 存储文件 |
 | `M365_USAGE_LOG` | 用量统计日志（默认 `{data_dir}/usage.jsonl`） |
 | `M365_DEBUG_LOG` | 调试日志文件（请求 / 响应元数据） |

@@ -35,11 +35,11 @@ var commonPasswordBlacklist = []string{
 }
 
 func adminPasswordPaths() (primary, legacy string) {
-	if dir := strings.TrimSpace(os.Getenv("M365_DATA_DIR")); dir != "" {
-		return filepath.Join(dir, "admin-password.json"), filepath.Join(dir, "admin-password")
-	}
 	if p := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD_FILE")); p != "" {
 		return p, ""
+	}
+	if dir := strings.TrimSpace(os.Getenv("M365_DATA_DIR")); dir != "" {
+		return filepath.Join(dir, "admin-password.json"), filepath.Join(dir, "admin-password")
 	}
 	if p := strings.TrimSpace(os.Getenv("M365_CONFIG")); p != "" {
 		return filepath.Join(filepath.Dir(p), "admin-password.json"), filepath.Join(filepath.Dir(p), "admin-password")

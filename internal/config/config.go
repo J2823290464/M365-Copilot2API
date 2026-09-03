@@ -21,6 +21,9 @@ func Path() string {
 	if p := os.Getenv("M365_CONFIG"); p != "" {
 		return p
 	}
+	if dir := os.Getenv("M365_DATA_DIR"); dir != "" {
+		return filepath.Join(dir, "accounts.json")
+	}
 	h, _ := os.UserHomeDir()
 	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
 }
