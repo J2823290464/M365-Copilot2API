@@ -13,6 +13,9 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) st
 - If no tool is needed, respond with: NO_TOOL_NEEDED
 - Only use tools from the available list above
 - Validate all arguments against the tool's schema
+- Batch independent read-only operations in one decision: emit multiple calls for file listing, file search, code search, and reading unrelated files when the declared tools support them
+- Prefer one broad search or a single shell inspection command over a chain of list-then-search-then-read calls when an equivalent declared tool is available
+- Keep dependent operations and all mutations/execution in order; never parallelize a write, edit, delete, or command that depends on another result
 - Do not invent tools that are not in the list`
 	// Multi-turn: completed tool evidence (tool[...], tool_calls:) was already
 	// acted upon, so re-invoking those tools would duplicate work.

@@ -25,6 +25,15 @@ tool[call_x]: 2026-07-18`, testTools(), "auto")
 	}
 }
 
+func TestModelToolRouterPromptBatchesReadOnlyOperations(t *testing.T) {
+	p := modelToolRouterPrompt("inspect the project", testTools(), "auto")
+	for _, phrase := range []string{"Batch independent read-only operations", "file search", "Keep dependent operations"} {
+		if !strings.Contains(p, phrase) {
+			t.Fatalf("missing batching guidance %q: %s", phrase, p)
+		}
+	}
+}
+
 func TestParseModelToolDecisionRejectsBadSchema(t *testing.T) {
 	calls, ok := parseModelToolDecision("```json\n{\"calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":2}}]}\n```", testTools(), "auto")
 	if !ok || len(calls) != 0 {

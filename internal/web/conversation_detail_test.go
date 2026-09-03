@@ -111,3 +111,17 @@ func TestFillConversationAccount(t *testing.T) {
 		t.Fatalf("existing account fields overwritten: %v", row)
 	}
 }
+
+func TestInternalConversationName(t *testing.T) {
+	for _, name := range []string{
+		"[system] x-anthropic-billing-header: cc_version=2.1",
+		"You are a tool selection assistant. Based on the user request",
+	} {
+		if !isInternalConversationName(name) {
+			t.Fatalf("name=%q was not recognized as internal", name)
+		}
+	}
+	if isInternalConversationName("Review README.md and summarize the deployment steps") {
+		t.Fatal("ordinary user conversation was classified as internal")
+	}
+}

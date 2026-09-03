@@ -150,31 +150,33 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 }
 
 type Server struct {
-	mu                   sync.Mutex
-	tokens               *auth.Store
-	accountPool          *accountHealth
-	accountConcurrency   *accountConcurrency
-	pkce                 map[string]pendingPKCE
-	chat                 *chathub.Client
-	proxyClients         sync.Map
-	sessions             *sessionStore
-	userSessions         *userSessionStore
-	sessionResolver      *sessionResolver
-	conversationManager  *conversationManager
-	adminPassword        string
-	adminPasswordHistory []string
-	adminSessions        map[string]time.Time
-	mustChangePassword   bool
-	loginAttempts        map[string]loginAttempt
-	apiKeys              *apiKeyStore
-	debug                *debugStore
-	settings             *settingsStore
-	responseMu           sync.Mutex
-	responseMessages     map[string]map[string]*RespNode
-	usage                *usageLog
-	generatedImages      map[string]generatedImage
-	convCache            *conversationCache
-	lastHealthyAccount   string
+	mu                     sync.Mutex
+	tokens                 *auth.Store
+	accountPool            *accountHealth
+	accountConcurrency     *accountConcurrency
+	pkce                   map[string]pendingPKCE
+	chat                   *chathub.Client
+	proxyClients           sync.Map
+	sessions               *sessionStore
+	userSessions           *userSessionStore
+	sessionResolver        *sessionResolver
+	conversationManager    *conversationManager
+	adminPassword          string
+	adminPasswordHistory   []string
+	adminSessions          map[string]time.Time
+	mustChangePassword     bool
+	loginAttempts          map[string]loginAttempt
+	apiKeys                *apiKeyStore
+	debug                  *debugStore
+	settings               *settingsStore
+	responseMu             sync.Mutex
+	responseMessages       map[string]map[string]*RespNode
+	usage                  *usageLog
+	generatedImages        map[string]generatedImage
+	convCache              *conversationCache
+	lastHealthyAccount     string
+	transientMu            sync.Mutex
+	transientConversations map[string]time.Time
 }
 
 const maxResponsesPerTenant = 256
@@ -1368,6 +1370,12 @@ func (s *Server) dropTransientConversation(conversationID string) {
 	if conversationID == "" || m365CloudClient == nil {
 		return
 	}
+	s.transientMu.Lock()
+	if s.transientConversations == nil {
+		s.transientConversations = make(map[string]time.Time)
+	}
+	s.transientConversations[conversationID] = time.Now().UTC()
+	s.transientMu.Unlock()
 	go func(id string) {
 		if err := m365CloudClient.DeleteConversation(id); err != nil {
 			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
@@ -1721,6 +1729,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
 	prompt = strings.TrimSpace(prompt)
+	if localTitleRequest(&body, prompt) {
+		log.Printf("[local-title] generated title without ChatHub")
+		writeLocalTitleResponse(w, firstNonEmpty(body.Model, "m365-copilot"), body.Messages)
+		return
+	}
 	if responseFormat != nil {
 		switch responseFormat.Type {
 		case "json_object":
@@ -1956,6 +1969,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Stream {
 		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+		answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2284,6 +2298,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+	answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
@@ -2954,4 +2969,21 @@ func extractOIDTID(accessToken string) (oid, tid string) {
 		tid = v
 	}
 	return oid, tid
+}
+
+func (s *Server) isTransientConversation(conversationID string) bool {
+	if len(conversationID) == 0 {
+		return false
+	}
+	s.transientMu.Lock()
+	defer s.transientMu.Unlock()
+	created, ok := s.transientConversations[conversationID]
+	if !ok {
+		return false
+	}
+	if time.Since(created) > 10*time.Minute {
+		delete(s.transientConversations, conversationID)
+		return false
+	}
+	return true
 }

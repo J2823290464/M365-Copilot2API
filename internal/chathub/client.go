@@ -241,6 +241,7 @@ type Request struct {
 	TimeZone              string
 	TimeZoneOffset        int
 	DeviceOS              string
+	HistoryBytes          int
 }
 
 type FeatureFlags struct {

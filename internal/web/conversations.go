@@ -153,9 +153,12 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		chats, cloudErr = m365CloudClient.ListConversations()
 		for _, chat := range chats {
 			conversationID, _ := chat["conversationId"].(string)
-			if conversationID != "" {
+			if conversationID != "" && !s.isTransientConversation(conversationID) {
 				if hasCloudAccount {
 					fillConversationAccount(chat, cloudAccount.ID, cloudAccount.Email)
+				}
+				if isInternalConversationName(conversationName(chat)) && !s.hasGatewayConversation(conversationID) {
+					continue
 				}
 				rows[conversationID] = chat
 			}
@@ -183,9 +186,7 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		if account, found := s.tokens.Get(session.AccountID); found {
 			row["accountEmail"] = account.Email
 		}
-		if name, _ := row["chatName"].(string); strings.TrimSpace(name) == "" {
-			row["chatName"] = conversationTitle(session.ContextHistory)
-		}
+		row["chatName"] = conversationTitle(session.ContextHistory)
 	}
 
 	data := make([]map[string]any, 0, len(rows))
@@ -202,6 +203,29 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 	jsonOut(w, response)
 }
 
+func (s *Server) hasGatewayConversation(conversationID string) bool {
+	for _, session := range s.sessionResolver.ListSessions() {
+		if session.ConversationID == conversationID {
+			return true
+		}
+	}
+	return false
+}
+
+func conversationName(row map[string]any) string {
+	for _, key := range []string{"chatName", "title", "subject"} {
+		if value, ok := row[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isInternalConversationName(name string) bool {
+	name = strings.ToLower(strings.Join(strings.Fields(name), " "))
+	return strings.HasPrefix(name, "[system] x-anthropic-billing-header:") ||
+		strings.Contains(name, "you are a tool selection assistant")
+}
 func fillConversationAccount(row map[string]any, accountID, accountEmail string) {
 	if value, _ := row["accountId"].(string); strings.TrimSpace(value) == "" {
 		row["accountId"] = accountID
