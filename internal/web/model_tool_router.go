@@ -13,6 +13,9 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) st
 - If no tool is needed, respond with: NO_TOOL_NEEDED
 - Only use tools from the available list above
 - Validate all arguments against the tool's schema
+- Batch independent read-only operations in one decision: emit multiple calls for file listing, file search, code search, and reading unrelated files when the declared tools support them
+- Prefer one broad search or a single shell inspection command over a chain of list-then-search-then-read calls when an equivalent declared tool is available
+- Keep dependent operations and all mutations/execution in order; never parallelize a write, edit, delete, or command that depends on another result
 - Do not invent tools that are not in the list`
 	// Multi-turn: completed tool evidence (tool[...], tool_calls:) was already
 	// acted upon, so re-invoking those tools would duplicate work.
@@ -94,4 +97,84 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 		out = append(out, detectedToolCall{ID: callID(c.Name, string(b), i), Type: toolType(c.Name, tools), Name: c.Name, Arguments: b})
 	}
 	return out, true
+}
+
+func localToolIntent(prompt string) bool {
+	low := strings.ToLower(prompt)
+	keywords := []string{"源码", "源代码", "项目", "代码", "文件", "目录", "路径", "读取", "查看", "检查", "修改", "编辑", "测试", "编译", "source code", "project", "code", "file", "directory", "path", "read", "inspect", "modify", "edit", "test", "compile", "pom.xml", "package.json", "go.mod", "c:\\", "d:\\", "/workspace/", "/src/"}
+	for _, keyword := range keywords {
+		if strings.Contains(low, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClientWorkspaceTool(tools []map[string]any) bool {
+	for _, tool := range tools {
+		if isExplicitClientWorkspaceTool(tool) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExplicitClientWorkspaceTool(tool map[string]any) bool {
+	for _, key := range []string{"client_side", "clientSide", "local", "workspace", "requires_client", "requiresClient"} {
+		if value, ok := tool[key].(bool); ok && value {
+			return true
+		}
+	}
+	for _, key := range []string{"execution_target", "executionTarget", "tool_scope", "toolScope", "target"} {
+		if value, ok := tool[key].(string); ok && isClientWorkspaceTarget(value) {
+			return true
+		}
+	}
+	for _, key := range []string{"metadata", "annotations"} {
+		if value, ok := tool[key].(map[string]any); ok && isExplicitClientWorkspaceTool(value) {
+			return true
+		}
+	}
+	toolType, _ := tool["type"].(string)
+	if isClientWorkspaceType(toolType) {
+		return true
+	}
+	fn, _ := tool["function"].(map[string]any)
+	if fn != nil {
+		if isExplicitClientWorkspaceTool(fn) {
+			return true
+		}
+		name, _ := fn["name"].(string)
+		if isClientWorkspaceName(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func isClientWorkspaceTarget(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "client", "client_side", "local", "workspace", "local_workspace":
+		return true
+	default:
+		return false
+	}
+}
+
+func isClientWorkspaceType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "client_tool", "local_tool", "workspace_tool", "client_function":
+		return true
+	default:
+		return false
+	}
+}
+
+func isClientWorkspaceName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "exec", "execute", "shell", "terminal", "powershell", "bash", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "list_files", "search_files", "search_code", "run_test", "run_tests":
+		return true
+	default:
+		return false
+	}
 }

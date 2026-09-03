@@ -25,9 +25,48 @@ tool[call_x]: 2026-07-18`, testTools(), "auto")
 	}
 }
 
+func TestModelToolRouterPromptBatchesReadOnlyOperations(t *testing.T) {
+	p := modelToolRouterPrompt("inspect the project", testTools(), "auto")
+	for _, phrase := range []string{"Batch independent read-only operations", "file search", "Keep dependent operations"} {
+		if !strings.Contains(p, phrase) {
+			t.Fatalf("missing batching guidance %q: %s", phrase, p)
+		}
+	}
+}
+
 func TestParseModelToolDecisionRejectsBadSchema(t *testing.T) {
 	calls, ok := parseModelToolDecision("```json\n{\"calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":2}}]}\n```", testTools(), "auto")
 	if !ok || len(calls) != 0 {
 		t.Fatalf("calls=%v ok=%v", calls, ok)
+	}
+}
+
+func TestLocalToolIntent(t *testing.T) {
+	if !localToolIntent("请检查 C:\\Workspace\\demo 项目源码") {
+		t.Fatal("expected local task intent")
+	}
+	if localToolIntent("解释一下什么是接口") {
+		t.Fatal("unexpected local task intent")
+	}
+}
+
+func TestHasClientWorkspaceTool(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "read_file"}}}
+	if !hasClientWorkspaceTool(tools) {
+		t.Fatal("expected client workspace tool")
+	}
+}
+
+func TestHasClientWorkspaceToolRejectsBroadCodeNames(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "code_interpreter"}}}
+	if hasClientWorkspaceTool(tools) {
+		t.Fatal("code_interpreter must not be treated as a client workspace tool")
+	}
+}
+
+func TestHasClientWorkspaceToolAcceptsExplicitMetadata(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "run_task", "metadata": map[string]any{"execution_target": "client"}}}}
+	if !hasClientWorkspaceTool(tools) {
+		t.Fatal("explicit client metadata was not recognized")
 	}
 }
