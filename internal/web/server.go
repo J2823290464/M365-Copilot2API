@@ -1634,6 +1634,13 @@ type oaiMetadata struct {
 	Client             string `json:"client,omitempty"`
 }
 
+func metadataThreadID(m *oaiMetadata) string {
+	if m == nil {
+		return ""
+	}
+	return firstNonEmpty(m.ThreadID, m.ThreadIDC)
+}
+
 func (r *oaiReq) shouldSendStreamUsage() bool {
 	if r.StreamOptions == nil {
 		return true
@@ -1950,7 +1957,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
-	log.Printf("[session-trace] path=chat project=%q session=%q thread=%q user=%q conv=%q", projectIDFromRequest(r, &body), sessionIDFromRequest(r, &body), body.Metadata.ThreadID, body.User, body.ConversationID)
+	log.Printf("[session-trace] path=chat project=%q session=%q thread=%q user=%q conv=%q", projectIDFromRequest(r, &body), sessionIDFromRequest(r, &body), metadataThreadID(body.Metadata), body.User, body.ConversationID)
 	if acc.OID == "" || acc.TID == "" {
 		if o, t := extractOIDTID(acc.AccessToken); o != "" {
 			acc.OID, acc.TID = o, t
