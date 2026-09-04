@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"strings"
+	"unicode"
 
 	"m365-copilot2api/internal/chathub"
 )
@@ -273,6 +274,10 @@ func slidingWindow(messages []oaiMsg, budget int) ([]oaiMsg, bool, error) {
 		sumP0P1 += atoms[anchorIdx].Tokens
 	}
 	if sumP0P1 > budget {
+		// Prefer a soft truncation of oversized tool results over a hard 400.
+		if clamped, ok := softClampToolResults(messages, atoms, p0Indices, p1Indices, anchorIdx, budget); ok {
+			return clamped, true, nil
+		}
 		return nil, false, fmt.Errorf("context_length_exceeded: pinned context (system+current task+anchor) %d tokens exceed budget %d; reduce tool results or start a new session", sumP0P1, budget)
 	}
 	remaining := budget - sumP0P1
@@ -309,4 +314,99 @@ func slidingWindow(messages []oaiMsg, budget int) ([]oaiMsg, bool, error) {
 		truncated = true
 	}
 	return out, truncated, nil
+}
+
+// truncateContentToTokenQuota cuts text to at most quota heuristic tokens while
+// preserving non-space runes and appending a marker when truncation occurred.
+func truncateContentToTokenQuota(text string, quota int) string {
+	if quota <= 0 {
+		return ""
+	}
+	var out strings.Builder
+	ascii, other := 0, 0
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			out.WriteRune(r)
+			continue
+		}
+		nextAscii, nextOther := ascii, other
+		if r <= 0x7f {
+			nextAscii++
+		} else {
+			nextOther++
+		}
+		if (nextAscii+3)/4+nextOther > quota {
+			break
+		}
+		ascii, other = nextAscii, nextOther
+		out.WriteRune(r)
+	}
+	s := out.String()
+	if len([]rune(s)) < len([]rune(text)) && strings.TrimSpace(text) != "" {
+		s += " \u2026[truncated]"
+	}
+	return s
+}
+
+// softClampToolResults is the last-resort fallback for a pinned context
+// (system + trailing tool block + anchor) that exceeds the budget. It shrinks
+// oversized string tool results in the trailing tool block while preserving the
+// protocol pairing (assistant tool_calls followed by their tool messages). It
+// returns the adjusted messages and true when a clamp was applied; otherwise
+// the original messages and false so callers can keep returning an explicit
+// context_length_exceeded error.
+func softClampToolResults(messages []oaiMsg, atoms []contextAtom, p0 []int, p1 []int, anchorIdx int, budget int) ([]oaiMsg, bool) {
+	base := requestProtocolTokens + replyPrimingTokens
+	for _, idx := range p0 {
+		base += atoms[idx].Tokens
+	}
+	if anchorIdx >= 0 {
+		base += atoms[anchorIdx].Tokens
+	}
+	// Tokens that must be preserved inside each trailing tool block: the payload
+	// that is not a string tool result (role, name, tool_call_id, assistant
+	// tool_calls declarations).
+	nonResult := 0
+	slots := []int{} // message indices of oversized string tool results
+	for _, ai := range p1 {
+		for mi := atoms[ai].Start; mi < atoms[ai].End; mi++ {
+			m := messages[mi]
+			if strings.EqualFold(strings.TrimSpace(m.Role), "tool") {
+				if s, ok := m.Content.(string); ok && strings.TrimSpace(s) != "" {
+					slots = append(slots, mi)
+					nonResult += messageProtocolTokens
+					nonResult += heuristicTokenCount(m.Role)
+					nonResult += heuristicTokenCount(m.Name)
+					nonResult += heuristicTokenCount(m.ToolCallID)
+				}
+			} else {
+				nonResult += estimateMessageTokens(m, heuristicTokenCount)
+			}
+		}
+	}
+	if len(slots) == 0 {
+		return messages, false
+	}
+	availForResult := budget - base - nonResult
+	if availForResult < len(slots) {
+		return messages, false
+	}
+	perSlotQuota := availForResult / len(slots)
+	if perSlotQuota < 1 {
+		perSlotQuota = 1
+	}
+	clamped := append([]oaiMsg(nil), messages...)
+	changed := false
+	for _, mi := range slots {
+		cur := contentToString(clamped[mi].Content)
+		next := truncateContentToTokenQuota(cur, perSlotQuota)
+		if next != cur {
+			clamped[mi].Content = next
+			changed = true
+		}
+	}
+	if !changed {
+		return messages, false
+	}
+	return clamped, true
 }

@@ -543,7 +543,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 	payload := chatPayload(req, requestID, firstTurn)
 	log.Printf("chathub prompt-trace text=%d tools=%d payload=%d", len(req.Text), len(req.Tools), len(payload))
-	if c.Trace != nil {
+	if c.Trace != nil && (chTrace || len(req.Attachments) > 0) {
 		meta := map[string]any{"stage": "chathub_payload", "attachment_count": len(req.Attachments), "payload_has_attachments": strings.Contains(payload, `"attachments"`), "attachments": []map[string]any{}}
 		for _, a := range req.Attachments {
 			meta["attachments"] = append(meta["attachments"].([]map[string]any), map[string]any{"type": a.Type, "mime_type": a.MimeType, "url_length": len(a.URL), "data_url": strings.HasPrefix(a.URL, "data:"), "name": a.Name})
@@ -1406,7 +1406,16 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	if deviceOS == "" {
 		deviceOS = "Windows"
 	}
-	text := toolProtocolPrompt(req.Text, req.Tools, req.ToolChoice, len(clientPlugins(req.Tools, req.MCPServerURL)) > 0)
+	// Router-mode answer turns carry tool schemas only for MCP bookkeeping; ChatHub
+	// must not receive them as native plugins, otherwise the model re-plans instead
+	// of answering and the schemas burn the context budget.
+	chatTools := req.Tools
+	chatChoice := req.ToolChoice
+	if req.MCPServerURL != "" {
+		chatTools = nil
+		chatChoice = nil
+	}
+	text := toolProtocolPrompt(req.Text, chatTools, chatChoice, len(clientPlugins(chatTools, req.MCPServerURL)) > 0)
 	federatedConns := req.ConnectedFederatedIDs
 	if len(federatedConns) == 0 {
 		federatedConns = []string{"dummyId"}
@@ -1429,7 +1438,6 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	}
 	message := map[string]any{
 		"author":                "user",
-		"attachments":           req.Attachments,
 		"inputMethod":           "Keyboard",
 		"text":                  text,
 		"entityAnnotationTypes": []string{"People", "File", "Event", "Email", "TeamsMessage"},
@@ -1446,6 +1454,10 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"connectedFederatedConnections": fcAny,
 		"clientInfo":                    clientInfo,
 	}
+	if len(req.Attachments) > 0 {
+		message["attachments"] = req.Attachments
+	}
+
 	// The browser does not send an OpenAI attachments array to ChatHub. It
 	// sends a file annotation after the file has been uploaded by Office.
 	annotations := make([]any, 0, len(req.Attachments))
@@ -1587,7 +1599,7 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"streamingMode":    "ConciseWithPadding",
 		"message":          message,
 
-		"plugins":                   clientPlugins(req.Tools, req.MCPServerURL),
+		"plugins":                   clientPlugins(chatTools, req.MCPServerURL),
 		"extraExtensionParameters":  map[string]any{},
 		"isSbsSupported":            true,
 		"renderReferencesBehindEOS": true,

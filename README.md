@@ -479,6 +479,45 @@ curl http://127.0.0.1:4141/v1/messages \
 
 其他任何支持 OpenAI / Anthropic `base_url` 配置的客户端（OpenCode、Cursor、Codex 等）同理，把 `BASE_URL` 指向网关即可。
 
+### 传递会话 / 项目 / 线程标识（会话与多客户端隔离）
+
+网关默认按「每个 API Key」隔离会话状态，并支持在**请求级**显式区分项目、会话与线程，让多客户端 / 多项目各自独立、不串话。三种方式按客户端能力选其一：
+
+**1) 自定义请求头（最精确，网关优先读取）**：
+
+- 会话：`X-M365-Session-Id`（别名 `X-Session-Id` / `X-Thread-Id` / `X-Codex-Thread-Id` / `X-Claude-Session-Id`）
+- 项目：`X-M365-Project-Id`（别名 `X-Project-Id` / `X-Workspace-Id` / `X-Codex-Workspace-Id` / `X-Claude-Workspace-Id`）
+- 携带同一会话标识的请求绑定到同一条云端对话，命中时网关只把新增历史发给上游。
+
+Claude Code 通过 `ANTHROPIC_CUSTOM_HEADERS` 附加任意请求头（JSON 对象）：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4141",
+    "ANTHROPIC_MODEL": "gpt-5.6-sol",
+    "ANTHROPIC_API_KEY": "m365_你的密钥",
+    "ANTHROPIC_CUSTOM_HEADERS": "{\"X-M365-Session-Id\":\"my-project-session\",\"X-M365-Project-Id\":\"my-project\"}"
+  }
+}
+```
+
+OpenCode 等支持 `--header` / 自定义请求头的客户端直接附加 `X-M365-Session-Id`；OpenAI / Anthropic SDK 则用 `default_headers` / `extra_headers` 传入同名请求头。
+
+**2) 请求体原生字段（无法加自定义头时）**：
+
+- OpenAI `/v1/chat/completions` 与 Responses `/v1/responses`：填顶层 `user`（用户隔离）和 `metadata`（`project_id` / `thread_id` / `session_id` 等）。
+- Anthropic `/v1/messages`：填顶层 `user`（账号粘性）和 `metadata`（`project_id` / `thread_id` / `session_id` / `sessionId` / `threadId` 键），网关已透传并按此解析会话。
+
+```bash
+curl http://127.0.0.1:4141/v1/messages \
+  -H "x-api-key: YOUR_API_KEY" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.6-sol","max_tokens":1024,"user":"u-1","metadata":{"project_id":"p-1","thread_id":"t-1"},"messages":[{"role":"user","content":"继续"}]}'
+```
+
+**3) 无法携带任何标识的封闭客户端**：网关回退到「内容键」启发式匹配同一云端对话；如需真正的多客户端隔离，只能让客户端提供稳定标识（方式 1 或 2）。
+
+
 > 作者不针对任何第三方 Agent 框架的兼容性提供适配与排查。如有需要，自行适配。
 
 控制台「API Keys」页的「使用 API 密钥」弹窗可直接生成 Claude Code 的 `settings.json` 配置与终端环境变量，复制即可。

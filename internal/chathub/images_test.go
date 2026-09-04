@@ -69,3 +69,10 @@ func TestChatPayloadIncludesRegularFileAnnotation(t *testing.T) {
 		}
 	}
 }
+
+func TestChatPayloadOmitsEmptyAttachmentsKey(t *testing.T) {
+	payload := chatPayload(Request{Text: "plain text"}, "request-empty", true)
+	if strings.Contains(payload, `"attachments"`) {
+		t.Fatalf("payload should not contain empty attachments key: %s", payload[:400])
+	}
+}

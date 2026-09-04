@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -68,5 +69,29 @@ func TestHasClientWorkspaceToolAcceptsExplicitMetadata(t *testing.T) {
 	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "run_task", "metadata": map[string]any{"execution_target": "client"}}}}
 	if !hasClientWorkspaceTool(tools) {
 		t.Fatal("explicit client metadata was not recognized")
+	}
+}
+
+func TestModelToolRouterPromptStaysWithinBudget(t *testing.T) {
+	tools := make([]map[string]any, 0, 50)
+	for i := 0; i < 50; i++ {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
+			"name":        fmt.Sprintf("tool_%02d", i),
+			"description": strings.Repeat("long description ", 40),
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}, "required": []any{"a"}},
+		}})
+	}
+	history := strings.Repeat("[user] earlier turn with lots of context\n", 4000)
+	p := modelToolRouterPrompt(history, tools, "auto")
+	if len(p) > maxRouterContextChars+16384 {
+		t.Fatalf("router prompt too large: %d", len(p))
+	}
+	if !strings.Contains(p, "MODE: auto") || !strings.Contains(p, "older history omitted") {
+		t.Fatalf("trimming markers missing: %d", len(p))
+	}
+	for _, name := range []string{"tool_00", "tool_49"} {
+		if !strings.Contains(p, name) {
+			t.Fatalf("compact tool defs missing %s", name)
+		}
 	}
 }
