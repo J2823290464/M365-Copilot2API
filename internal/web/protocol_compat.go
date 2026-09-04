@@ -168,10 +168,12 @@ type anthropicRequest struct {
 	Stream        bool               `json:"stream,omitempty"`
 	MaxTokens     int                `json:"max_tokens,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
+	User          string             `json:"user,omitempty"`
+	Metadata      *oaiMetadata       `json:"metadata,omitempty"`
 }
 
 func (r anthropicRequest) openAI() (oaiReq, error) {
-	o := oaiReq{Model: r.Model, Stream: r.Stream}
+	o := oaiReq{Model: r.Model, Stream: r.Stream, User: r.User, Metadata: r.Metadata}
 	if r.MaxTokens > 0 {
 		mt := r.MaxTokens
 		o.MaxCompletionTokens = &mt

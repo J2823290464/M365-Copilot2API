@@ -1,7 +1,9 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -93,5 +95,48 @@ func TestAnthropicToolResult(t *testing.T) {
 	o, err := r.openAI()
 	if err != nil || len(o.Messages) != 2 || o.Messages[1].ToolCallID != "x" {
 		t.Fatalf("%+v %v", o, err)
+	}
+}
+
+func TestAnthropicUserAndMetadataToOpenAI(t *testing.T) {
+	r := anthropicRequest{
+		Model:    "m",
+		Messages: []anthropicMessage{{Role: "user", Content: any("hi")}},
+		User:     "user-abc",
+		Metadata: &oaiMetadata{ProjectID: "proj-1", ThreadID: "thread-9", SessionID: "sess-7"},
+	}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.User != "user-abc" {
+		t.Fatalf("user=%q, want user-abc", o.User)
+	}
+	if o.Metadata == nil || o.Metadata.ProjectID != "proj-1" || o.Metadata.ThreadID != "thread-9" || o.Metadata.SessionID != "sess-7" {
+		t.Fatalf("metadata=%#v, want project/thread/session preserved", o.Metadata)
+	}
+}
+
+func TestAnthropicMetadataCamelCaseResolvesFromRequest(t *testing.T) {
+	// Claude/AI SDKs often send camelCase keys inside metadata; both snake_case
+	// and camelCase must survive the Anthropic -> openAI round trip so the
+	// session resolver can read project/thread.
+	raw := `{"model":"m","messages":[{"role":"user","content":"hi"}],"metadata":{"projectId":"p-c","threadId":"t-c","sessionId":"s-c"}}`
+	var ar anthropicRequest
+	if err := json.Unmarshal([]byte(raw), &ar); err != nil {
+		t.Fatal(err)
+	}
+	o, err := ar.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Metadata == nil || o.Metadata.ProjectIDC != "p-c" || o.Metadata.ThreadIDC != "t-c" || o.Metadata.SessionIDC != "s-c" {
+		t.Fatalf("metadata=%#v", o.Metadata)
+	}
+	if got := projectIDFromRequest(&http.Request{Header: make(http.Header)}, &o); got != "p-c" {
+		t.Fatalf("projectID=%q, want p-c", got)
+	}
+	if got := sessionIDFromRequest(&http.Request{Header: make(http.Header)}, &o); got != "s-c" {
+		t.Fatalf("sessionID=%q, want s-c (thread= %q)", got, metadataThreadID(o.Metadata))
 	}
 }
