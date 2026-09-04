@@ -100,6 +100,11 @@ func (s *Server) persistResponsesHistory(r *http.Request, body responsesRequest,
 		}
 	}
 	sessionID := responseSessionID(r, &o)
+	threadID := ""
+	if o.Metadata != nil {
+		threadID = o.Metadata.ThreadID
+	}
+	log.Printf("[session-trace] project=%q session=%q thread=%q prev=%q user=%q", projectIDFromRequest(r, &o), sessionIDFromRequest(r, &o), threadID, body.PreviousResponseID, o.User)
 	nsKey := responseNamespace(tenant, sessionID)
 	stored := append([]oaiMsg(nil), o.Messages...)
 	if len(toolCalls) > 0 {
@@ -395,6 +400,11 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sessionID := responseSessionID(r, &o)
+	threadID := ""
+	if o.Metadata != nil {
+		threadID = o.Metadata.ThreadID
+	}
+	log.Printf("[session-trace] project=%q session=%q thread=%q prev=%q user=%q", projectIDFromRequest(r, &o), sessionIDFromRequest(r, &o), threadID, body.PreviousResponseID, o.User)
 	nsKey := responseNamespace(tenant, sessionID)
 	if body.PreviousResponseID != "" {
 		toolIDs := extractResponsesToolOutputIDs(body.Input)

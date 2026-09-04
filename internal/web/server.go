@@ -1732,8 +1732,11 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if planningMode == "native" {
 		req.Tools = body.Tools
 		req.ToolChoice = body.ToolChoice
-	}
-	if mcpServerURL != "" {
+	} else if mcpServerURL != "" {
+		// Router mode: tools are exposed to ChatHub through the MCP gateway. Keep the
+		// raw schemas out of the ChatHub payload so they do not count against the
+		// upstream context budget; the router turn already made the tool decision.
+		req.MCPServerURL = mcpServerURL
 		req.Tools = body.Tools
 		if req.ToolChoice == nil {
 			req.ToolChoice = body.ToolChoice
@@ -1947,6 +1950,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
+	log.Printf("[session-trace] path=chat project=%q session=%q thread=%q user=%q conv=%q", projectIDFromRequest(r, &body), sessionIDFromRequest(r, &body), body.Metadata.ThreadID, body.User, body.ConversationID)
 	if acc.OID == "" || acc.TID == "" {
 		if o, t := extractOIDTID(acc.AccessToken); o != "" {
 			acc.OID, acc.TID = o, t
@@ -2045,7 +2049,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// no tool; this prevents a natural-language preamble from becoming a
 		// completed assistant turn with the actual call lost.
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
-		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
+		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d tools=%d", requestID, len(routePrompt), len(toolMaps))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
 		// Router turns run in a throwaway cloud conversation that is never

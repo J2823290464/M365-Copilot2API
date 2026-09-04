@@ -6,8 +6,60 @@ import (
 	"strings"
 )
 
+// maxRouterContextChars caps how much of the flattened conversation is embedded in a
+// tool-routing prompt. 50 tool schemas plus a long history pushed routing prompts
+// past 150k chars (~37k tokens) and tripped the upstream 32768-token budget.
+// Routing only needs the current request and recent turns, never the full history.
+const maxRouterContextChars = 24000
+
+// compactToolDefs replaces the full JSON schema dump with one line per tool.
+// validateDetectedToolCalls re-validates every parsed call against the full schema.
+func compactToolDefs(tools []map[string]any) string {
+	var b strings.Builder
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]any)
+		if fn == nil {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if name == "" {
+			continue
+		}
+		desc, _ := fn["description"].(string)
+		if len(desc) > 160 {
+			desc = desc[:160] + "..."
+		}
+		var required []string
+		if params, ok := fn["parameters"].(map[string]any); ok {
+			if req, ok := params["required"].([]any); ok {
+				for _, r := range req {
+					if s, ok := r.(string); ok {
+						required = append(required, s)
+					}
+				}
+			}
+		}
+		if len(required) > 0 {
+			fmt.Fprintf(&b, "- %s(required: %s): %s\n", name, strings.Join(required, ","), desc)
+		} else {
+			fmt.Fprintf(&b, "- %s: %s\n", name, desc)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// trimRouterContext keeps the head (system/dev framing) and the tail (current
+// request), dropping the middle of long histories so routing stays within budget.
+func trimRouterContext(prompt string) string {
+	if len(prompt) <= maxRouterContextChars {
+		return prompt
+	}
+	head := maxRouterContextChars / 4
+	tail := maxRouterContextChars - head
+	return prompt[:head] + "\n...[older history omitted]...\n" + prompt[len(prompt)-tail:]
+}
 func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) string {
-	defs, _ := json.Marshal(tools)
+	defs := compactToolDefs(tools)
 	mode := normalizedToolChoiceMode(choice)
 	rules := `- If a tool is needed, respond with: CALL_TOOL: tool_name({"arg1":"value1"})
 - If no tool is needed, respond with: NO_TOOL_NEEDED
@@ -34,7 +86,7 @@ Rules:
 %s
 
 User request and evidence:
-%s`, defs, mode, rules, prompt)
+%s`, defs, mode, rules, trimRouterContext(prompt))
 }
 
 func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
