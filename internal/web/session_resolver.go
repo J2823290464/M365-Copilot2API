@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -94,17 +95,37 @@ func openSessionResolver() *sessionResolver {
 }
 
 func (sr *sessionResolver) loadLocked() {
-	if b, err := os.ReadFile(sr.path); err == nil {
-		var list []sessionBinding
-		if err := json.Unmarshal(b, &list); err == nil {
-			now := time.Now().UTC()
-			for _, s := range list {
-				if now.Sub(s.LastUsedAt) > sr.ttl {
-					continue
-				}
-				sr.reindexLocked(s)
-			}
+	b, err := os.ReadFile(sr.path)
+	if err != nil {
+		return
+	}
+	var list []sessionBinding
+	legacyFormat := false
+	if err := json.Unmarshal(b, &list); err != nil {
+		var legacy map[string]sessionBinding
+		if err := json.Unmarshal(b, &legacy); err != nil {
+			log.Printf("[sessions] failed to load %s: %v", sr.path, err)
+			return
 		}
+		legacyFormat = true
+		list = make([]sessionBinding, 0, len(legacy))
+		for id, session := range legacy {
+			if session.SessionID == "" {
+				session.SessionID = id
+			}
+			list = append(list, session)
+		}
+		log.Printf("[sessions] migrated legacy object format path=%s entries=%d", sr.path, len(list))
+	}
+	now := time.Now().UTC()
+	for _, session := range list {
+		if now.Sub(session.LastUsedAt) > sr.ttl {
+			continue
+		}
+		sr.reindexLocked(session)
+	}
+	if legacyFormat && sr.persist != nil {
+		sr.persist.markDirty()
 	}
 }
 

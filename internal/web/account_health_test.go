@@ -90,6 +90,33 @@ func TestAccountHealthLifecycle(t *testing.T) {
 	}
 }
 
+func TestAccountDisabledAfterCooldownRecoveryFailure(t *testing.T) {
+	h := newAccountHealth()
+	const id = "acct-disabled"
+	for attempt := 0; attempt < 3; attempt++ {
+		h.MarkFailure(id, &UpstreamHTTPError{Status: 502}, time.Minute)
+		h.mu.Lock()
+		h.cooldown[id] = time.Now().Add(-time.Second)
+		h.mu.Unlock()
+		if attempt < 2 && !h.Available(id) {
+			t.Fatalf("account should recover before the third failure: attempt=%d", attempt+1)
+		}
+	}
+	if h.Disabled(id) {
+		t.Fatal("account must not be disabled after the temporary cooldown cycle")
+	}
+	h.mu.Lock()
+	h.cooldown[id] = time.Now().Add(-time.Second)
+	h.mu.Unlock()
+	if !h.Available(id) {
+		t.Fatal("account should be available after cooldown recovery")
+	}
+	h.MarkFailure(id, &UpstreamHTTPError{Status: 502}, time.Minute)
+	if !h.Disabled(id) || h.Available(id) {
+		t.Fatal("account must be disabled after failing again post-recovery")
+	}
+}
+
 func TestCooldownExpiryClearsCallCount(t *testing.T) {
 	h := newAccountHealth()
 	const id = "acct-expiry"

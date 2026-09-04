@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -417,6 +418,9 @@ type accountHealth struct {
 	remainingAllowance     map[string]map[string]int
 	authFailReason         map[string]string
 	quotaAttempts          map[string]int
+	failureStreak          map[string]int
+	recoveryArmed          map[string]bool
+	disabled               map[string]bool
 }
 
 func newAccountHealth() *accountHealth {
@@ -436,6 +440,9 @@ func newAccountHealth() *accountHealth {
 		remainingAllowance:     map[string]map[string]int{},
 		authFailReason:         map[string]string{},
 		quotaAttempts:          map[string]int{},
+		failureStreak:          map[string]int{},
+		recoveryArmed:          map[string]bool{},
+		disabled:               map[string]bool{},
 	}
 }
 
@@ -454,6 +461,9 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 		delete(h.calls, accountID)
 	}
 	delete(h.quotaAttempts, accountID)
+	if h.failureStreak[accountID] >= 3 {
+		h.recoveryArmed[accountID] = true
+	}
 	if t, ok := h.imageGenCooldownUntil[accountID]; ok && time.Now().After(t) {
 		delete(h.imageGenCooldownUntil, accountID)
 	}
@@ -656,6 +666,13 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.recoveryArmed[accountID] {
+		h.disabled[accountID] = true
+		delete(h.cooldown, accountID)
+		log.Printf("[account-health] account=%s disabled after failure following cooldown recovery category=%s", accountID, cat)
+		return
+	}
+	h.failureStreak[accountID]++
 	switch cat {
 	case CategoryAuthExpired401:
 		cooldown := CooldownForCategory(cat, 0, 1)
@@ -772,6 +789,9 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	delete(h.limited, accountID)
 	delete(h.authFailReason, accountID)
 	delete(h.quotaAttempts, accountID)
+	delete(h.failureStreak, accountID)
+	delete(h.recoveryArmed, accountID)
+	delete(h.disabled, accountID)
 	GlobalCircuitRecord(nil)
 	if imageLimited && time.Now().Before(imageLimitUntil) {
 		h.imageLimited[accountID] = true
@@ -793,11 +813,23 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	}
 }
 
+func (h *accountHealth) Disabled(accountID string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.disabled[accountID]
+}
+
 func (h *accountHealth) Available(accountID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cleanupExpiredCooldownLocked(accountID)
 	if GlobalCircuitIsOpen() {
+		return false
+	}
+	if h.disabled[accountID] {
 		return false
 	}
 	if h.authFail[accountID] {
@@ -858,6 +890,9 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 	for id := range h.quotaAttempts {
 		ids[id] = true
 	}
+	for id := range h.disabled {
+		ids[id] = true
+	}
 	for id := range h.imageGenCooldownUntil {
 		ids[id] = true
 	}
@@ -878,6 +913,12 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 		}
 		if h.authFail[id] {
 			m["authFailed"] = true
+		}
+		if h.disabled[id] {
+			m["disabled"] = true
+		}
+		if streak := h.failureStreak[id]; streak > 0 {
+			m["failureStreak"] = streak
 		}
 		if h.limited[id] {
 			m["limited"] = true
@@ -952,6 +993,9 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.remainingAllowance = map[string]map[string]int{}
 	h.authFailReason = map[string]string{}
 	h.quotaAttempts = map[string]int{}
+	h.failureStreak = map[string]int{}
+	h.recoveryArmed = map[string]bool{}
+	h.disabled = map[string]bool{}
 	ResetGlobalCircuit()
 }
 

@@ -38,6 +38,7 @@ services:
       M365_CHAT_TIMEOUT_SECONDS: "120"
       M365_IMAGE_TIMEOUT_SECONDS: "150"
       M365_PUBLIC_IDENTITY_POLICY: "${M365_PUBLIC_IDENTITY_POLICY:-false}"
+      M365_MASTER_KEY: "${M365_MASTER_KEY:?Set M365_MASTER_KEY in .env before starting}"
     volumes:
       - ./data:/data
       - ./secrets/m365_admin_password:/run/secrets/m365_admin_password:ro

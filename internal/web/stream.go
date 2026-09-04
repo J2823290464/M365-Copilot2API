@@ -56,12 +56,36 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	streamSettings := s.settings.get()
-	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
+	request := chathub.Request{
 		Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments,
 		LicenseType: streamSettings.LicenseType, Scenario: streamSettings.Scenario,
 		ConversationSignature: body.ConversationSignature, PreviousMessages: body.PreviousMessages, ConnectedFederatedIDs: body.ConnectedFederatedIDs,
 		FeatureFlags: s.featureFlags(),
-	})
+	}
+	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, request)
+	if err != nil && newSession && shouldFailoverAccount(err) {
+		for attempt := 1; attempt <= 2; attempt++ {
+			select {
+			case <-r.Context().Done():
+				break
+			case <-time.After(accountRetryDelay(err, attempt)):
+			}
+			if r.Context().Err() != nil {
+				break
+			}
+			next, nextErr := s.nextHealthyAccount(acc.ID)
+			if nextErr != nil {
+				break
+			}
+			request.ConversationID, request.SessionID = "", ""
+			res, err = s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, request)
+			if err == nil {
+				log.Printf("[account-failover] from=%s to=%s attempt=%d", acc.ID, next.ID, attempt)
+				acc = next
+				break
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
 			s.accountPool.MarkImageLimited(acc.ID)

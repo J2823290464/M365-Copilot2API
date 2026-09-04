@@ -1,8 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -154,6 +156,28 @@ func TestResolverEvictsAfterTTL(t *testing.T) {
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "旧问题"}}})
 	if !res.IsNew {
 		t.Fatalf("闲置超 TTL 的会话应失效，got matched=%s", res.MatchedBy)
+	}
+}
+
+func TestResolverLoadsLegacyObjectFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	now := time.Now().UTC()
+	legacy := map[string]sessionBinding{"legacy-key": {ConversationID: "conv-legacy", AccountID: "acct-legacy", CreatedAt: now, LastUsedAt: now}}
+	b, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_SESSION_CACHE", path)
+	sr := openSessionResolver()
+	if len(sr.sessions) != 1 {
+		t.Fatalf("loaded sessions=%d want 1", len(sr.sessions))
+	}
+	if _, ok := sr.sessions["legacy-key"]; !ok {
+		t.Fatalf("legacy session key missing: %#v", sr.sessions)
 	}
 }
 

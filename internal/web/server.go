@@ -34,6 +34,33 @@ type pendingPKCE struct {
 	RedirectURI string
 }
 
+func shouldFailoverAccount(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch ClassifyError(err) {
+	case CategoryQuota429, CategoryOverload503, CategoryAuthExpired401, CategoryForbidden403,
+		CategorySOCKS5, CategoryDNS, CategoryTCP, CategoryTLS, CategoryWSHandshake, CategoryWSReadTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func accountRetryDelay(err error, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := 250 * time.Millisecond * time.Duration(1<<(attempt-1))
+	if retryAfter := RetryAfterSeconds(err); retryAfter > 0 {
+		delay = time.Duration(retryAfter) * time.Second
+	}
+	if delay > 5*time.Second {
+		delay = 5 * time.Second
+	}
+	return delay
+}
+
 func (s *Server) getRateLimitCooldown() time.Duration {
 	secs := s.settings.get().RateLimitCooldownSeconds
 	if secs < 5 {
@@ -687,6 +714,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		Email              string         `json:"email"`
 		DisplayName        string         `json:"displayName,omitempty"`
 		Status             string         `json:"status"`
+		Disabled           bool           `json:"disabled"`
 		ScheduleEnabled    bool           `json:"scheduleEnabled"`
 		CallCount          uint64         `json:"callCount"`
 		RateLimited        bool           `json:"rateLimited"`
@@ -718,7 +746,9 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		var authFailReason string
 		var imageLimited bool
 		if s.accountPool != nil {
-			if until, ok := s.accountPool.CooldownUntil(a.ID); ok {
+			if s.accountPool.Disabled(a.ID) {
+				status = "disabled"
+			} else if until, ok := s.accountPool.CooldownUntil(a.ID); ok {
 				status = "cooldown"
 				cooldownUntil = &until
 			}
@@ -732,7 +762,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		concurrency := s.accountConcurrency.Inflight(a.ID)
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
-			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
+			Status: status, Disabled: s.accountPool != nil && s.accountPool.Disabled(a.ID), ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
 			ImageLimited:   imageLimited,
 			AuthFailed:     s.accountPool != nil && !s.accountPool.Available(a.ID) && authFailReason != "",
 			AuthFailReason: authFailReason,
@@ -2205,7 +2235,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(ev.Text)
 			return emitText(ev.Text)
 		})
-		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && shouldFailoverAccount(err) && (IsRateLimited(err) || IsAuthFailure(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
 			originalErr := err
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
