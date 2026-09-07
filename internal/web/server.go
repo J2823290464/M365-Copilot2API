@@ -1758,6 +1758,12 @@ func normalizeLegacyTools(body *oaiReq) {
 	}
 }
 
+func logToolChoice(choice any) string {
+	if choice == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%q", fmt.Sprint(choice))
+}
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string, cfg runtimeSettings, flags chathub.FeatureFlags, locale chathubLocale, disableMemory bool) chathub.Request {
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
@@ -2055,19 +2061,23 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	planningMode := s.settings.get().ToolPlanningMode
 	toolCfg := s.settings.get()
+	originalToolChoice := body.ToolChoice
 	forceClientTool := false
-	if toolCfg.AutoClientToolUse && hasClientWorkspaceTool(toolMaps) && (body.ToolChoice == nil || fmt.Sprint(body.ToolChoice) == "auto") {
+	clientToolAvailable := hasClientWorkspaceTool(toolMaps)
+	clientToolIntent := false
+	if toolCfg.AutoClientToolUse && clientToolAvailable && (body.ToolChoice == nil || fmt.Sprint(body.ToolChoice) == "auto") {
 		switch toolCfg.ClientToolPermission {
 		case "auto_review":
-			forceClientTool = localToolIntent(answerPrompt)
+			clientToolIntent = localToolIntent(answerPrompt)
+			forceClientTool = clientToolIntent
 		case "full_access":
 			forceClientTool = true
 		}
 	}
 	if forceClientTool {
 		body.ToolChoice = "required"
-		log.Printf("[client-tools] forced tool request permission=%s keyword_match=%t", toolCfg.ClientToolPermission, localToolIntent(answerPrompt))
 	}
+	log.Printf("[tool-config] id=%s planning_mode=%s auto_client_tools=%t permission=%s declared_tools=%d client_tool_available=%t intent_match=%t tool_choice_in=%s tool_choice_out=%s forced=%t", requestID, planningMode, toolCfg.AutoClientToolUse, toolCfg.ClientToolPermission, len(toolMaps), clientToolAvailable, clientToolIntent, logToolChoice(originalToolChoice), logToolChoice(body.ToolChoice), forceClientTool)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
