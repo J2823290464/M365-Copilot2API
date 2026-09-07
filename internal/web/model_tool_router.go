@@ -153,7 +153,13 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 
 func localToolIntent(prompt string) bool {
 	low := strings.ToLower(prompt)
-	keywords := []string{"源码", "源代码", "项目", "代码", "文件", "目录", "路径", "读取", "查看", "检查", "修改", "编辑", "测试", "编译", "source code", "project", "code", "file", "directory", "path", "read", "inspect", "modify", "edit", "test", "compile", "pom.xml", "package.json", "go.mod", "c:\\", "d:\\", "/workspace/", "/src/"}
+	keywords := []string{"修订", "审订", "核改", "批改", "更正", "订正", "微调", "局部调整", "结构性调整", "推翻重来", "版本迭代", "拟订", "增删", "措辞修改", "行文规范", "修改建议", "修订记录", "变更申请", "最终定稿", "版本回退",
+	                    "润色", "打磨", "炼字", "降重", "扩写", "精炼", "重组", "增删", "调整", "优化", "审稿", "校对", "换角度", "情绪强化", "批注", "全局修改", "软性修改",
+	                    "调色", "统一", "构图调整", "细化", "简化", "微交互优化", "动效参数调整", "间距", "视觉降噪", "迭代", "优化视觉表现", "输出切图", "还原走查", "微动一下", "细节收尾", "整体感把控",
+	                     "重构", "优化", "修复", "补丁", "更新", "热修复", "回滚", "覆盖", "迁移", "Diff", "Commit", "Merge", "冲突解决",
+	                     "优化一下", "细化", "复盘后调整", "换一种思路", "重新梳理", "微调", "调整", "补齐", "核对", "优化", "重组", "拆分", "精简", "重塑", "推翻", "重构", "重新定义", "增强", "减弱", "明确",
+	                     "重写", "改写", "拼写纠错", "格式规范化", "时间调换", "顺序重排", "删减冗余", "替换配图", "音量调整", "裁剪拼接"
+	}
 	for _, keyword := range keywords {
 		if strings.Contains(low, strings.ToLower(keyword)) {
 			return true

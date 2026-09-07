@@ -43,6 +43,18 @@ func TestParseModelToolDecisionRejectsBadSchema(t *testing.T) {
 }
 
 func TestLocalToolIntent(t *testing.T) {
+	for _, prompt := range []string{
+		"查看本地配置",
+		"检查本机文件",
+		"读取工作区内容",
+		"检查代码仓库",
+		"inspect local workspace",
+		"read repository files",
+	} {
+		if !localToolIntent(prompt) {
+			t.Fatalf("expected local task intent for %q", prompt)
+		}
+	}
 	if !localToolIntent("请检查 C:\\Workspace\\demo 项目源码") {
 		t.Fatal("expected local task intent")
 	}
