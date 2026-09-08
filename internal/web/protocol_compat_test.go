@@ -140,3 +140,33 @@ func TestAnthropicMetadataCamelCaseResolvesFromRequest(t *testing.T) {
 		t.Fatalf("sessionID=%q, want s-c (thread= %q)", got, metadataThreadID(o.Metadata))
 	}
 }
+
+func TestSessionIDFromRequestPrefersCustomDisplayHeader(t *testing.T) {
+	r := &http.Request{Header: make(http.Header)}
+	r.Header.Set("Session-Id", "display-session")
+	r.Header.Set("X-M365-Session-Id", "client-session")
+	body := &oaiReq{SessionID: "body-session"}
+
+	if got := sessionIDFromRequest(r, body); got != "display-session" {
+		t.Fatalf("sessionID=%q, want display-session", got)
+	}
+}
+
+func TestSessionIDFromRequestSupportsLegacyUnderscoreHeader(t *testing.T) {
+	r := &http.Request{Header: make(http.Header)}
+	r.Header.Set("Session_Id", "legacy-display-session")
+	r.Header.Set("X-Session-Id", "client-session")
+
+	if got := sessionIDFromRequest(r, nil); got != "legacy-display-session" {
+		t.Fatalf("sessionID=%q, want legacy-display-session", got)
+	}
+}
+
+func TestSessionIDFromRequestFallsBackToClientHeader(t *testing.T) {
+	r := &http.Request{Header: make(http.Header)}
+	r.Header.Set("X-M365-Session-Id", "client-session")
+
+	if got := sessionIDFromRequest(r, nil); got != "client-session" {
+		t.Fatalf("sessionID=%q, want client-session", got)
+	}
+}

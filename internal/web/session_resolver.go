@@ -709,6 +709,14 @@ func projectIDFromRequest(r *http.Request, body *oaiReq) string {
 }
 
 func sessionIDFromRequest(r *http.Request, body *oaiReq) string {
+	// Prefer the custom display header (both "Session-Id" and the legacy
+	// underscore variant "Session_Id"); fall back to the client's own
+	// session/thread headers when absent.
+	for _, name := range []string{"Session-Id", "Session_Id"} {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			return value
+		}
+	}
 	for _, name := range []string{"X-M365-Session-Id", "X-Session-Id", "X-Thread-Id", "X-Codex-Thread-Id", "X-Claude-Session-Id"} {
 		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
 			return value
