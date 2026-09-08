@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +90,7 @@ func masterKey() []byte {
 		raw = strings.TrimSpace(os.Getenv("M365_TOKEN_ENCRYPTION_KEY"))
 	}
 	if raw == "" {
-		log.Printf("[security] WARNING: M365_MASTER_KEY not set; refresh tokens are encrypted with a built-in public fallback key. Set M365_MASTER_KEY to protect accounts.json at rest.")
+		applog.Warn("auth", "master_key_not_set", "message", "refresh tokens use the built-in fallback key; set M365_MASTER_KEY to protect accounts.json at rest")
 		raw = "m365-copilot2api-fallback-pepper-v1-TODO-DPAPI-keyring"
 	}
 	pepper := []byte("m365-copilot2api-pepper-v1")
@@ -244,7 +244,7 @@ func OpenStore(path string) (*Store, error) {
 		if dec, err := decryptRefreshToken(a.RefreshToken); err == nil {
 			a.RefreshToken = dec
 		} else if isEncrypted(a.RefreshToken) {
-			log.Printf("[security] WARNING: failed to decrypt refresh token for account %s (email=%s): %v. Token kept as-is; refresh will fail until M365_MASTER_KEY matches the encryption key.", a.ID, a.Email, err)
+			applog.Warn("auth", "refresh_token_decrypt_failed", "account_id", a.ID, "email", a.Email, "error", err, "message", "token kept as-is; refresh will fail until M365_MASTER_KEY matches the encryption key")
 		}
 		if a.OID == "" {
 			a.OID = a.ID

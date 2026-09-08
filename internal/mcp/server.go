@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"net/http"
 	"sync"
 	"time"
@@ -80,7 +80,7 @@ func HandleToolsList(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []Tool{}
 	}
-	log.Printf("[mcp-tools] HandleToolsList called, returning %d tools", len(tools))
+	applog.Info("mcp", "tools_list_handled", "tool_count", len(tools))
 	json.NewEncoder(w).Encode(map[string]any{"tools": tools})
 }
 
@@ -208,7 +208,7 @@ func HandleMessage(w http.ResponseWriter, r *http.Request) {
 	select {
 	case sess.msgCh <- b:
 	default:
-		log.Printf("[mcp] dropped response for session %s (channel full)", sessionID)
+		applog.Warn("mcp", "response_dropped", "session_id", sessionID, "reason", "channel_full")
 	}
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})

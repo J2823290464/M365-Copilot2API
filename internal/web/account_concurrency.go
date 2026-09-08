@@ -3,7 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"os"
 	"strconv"
 	"strings"
@@ -178,7 +178,7 @@ func (s *Server) logChatHubUsage(request chathub.Request, result chathub.Result,
 	if toolSchemaBytes > 0 {
 		promptTokens += int64(tokenCount(string(mustJSON(request.Tools))))
 	}
-	log.Printf("[chat-usage] chat_hub_call_id=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d tool_schema_bytes=%d history_bytes=%d status=%s", result.RequestID, promptTokens, completionTokens, promptTokens+completionTokens, toolSchemaBytes, request.HistoryBytes, usageStatus(err))
+	applog.Info("web", "chat_usage", "chat_hub_call_id", result.RequestID, "prompt_tokens", promptTokens, "completion_tokens", completionTokens, "total_tokens", promptTokens+completionTokens, "tool_schema_bytes", toolSchemaBytes, "history_bytes", request.HistoryBytes, "status", usageStatus(err))
 }
 
 func usageStatus(err error) string {

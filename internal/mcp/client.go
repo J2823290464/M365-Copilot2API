@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"m365-copilot2api/internal/applog"
 	"net/http"
 	"strings"
 	"sync"
@@ -85,7 +86,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
-			fmt.Printf("[mcp-client] sse data: %s\n", data)
+			applog.Debug("mcp", "sse_data_received", "data", data)
 		}
 		if strings.HasPrefix(line, "event: endpoint") {
 			continue

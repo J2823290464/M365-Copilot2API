@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
@@ -393,7 +393,7 @@ func (c *Client) ChatWithReasoning(ctx context.Context, acc Account, req Request
 
 func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler) (Result, error) {
 	startedAt := time.Now()
-	log.Printf("chathub timing start prompt_len=%d", len(req.Text))
+	applog.Debug("chathub", "request_started", "prompt_len", len(req.Text))
 	if acc.AccessToken == "" || acc.OID == "" || acc.TID == "" {
 		return Result{}, fmt.Errorf("missing access token / oid / tid")
 	}
@@ -462,7 +462,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
 					retryAfter = v
 				}
-				log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+				applog.Warn("chathub", "websocket_dial_failed", "status", resp.StatusCode, "retry_after_seconds", retryAfter)
 				kind := ""
 				switch resp.StatusCode {
 				case 429:
@@ -483,9 +483,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}
 	if reused {
-		log.Printf("chathub timing ws_dial_ms=0 total_ms=%d reused=true (pooled)", time.Since(startedAt).Milliseconds())
+		applog.Debug("chathub", "websocket_connected", "dial_ms", 0, "total_ms", time.Since(startedAt).Milliseconds(), "reused", true)
 	} else {
-		log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=false", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
+		applog.Debug("chathub", "websocket_connected", "dial_ms", time.Since(dialStarted).Milliseconds(), "total_ms", time.Since(startedAt).Milliseconds(), "reused", false)
 	}
 	phase = PhaseHandshake
 
@@ -543,7 +543,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	_ = wsWrite(websocket.TextMessage, []byte(`{"type":6}`+rs))
 
 	payload := chatPayload(req, requestID, firstTurn)
-	log.Printf("chathub prompt-trace text=%d tools=%d payload=%d", len(req.Text), len(req.Tools), len(payload))
+	applog.Debug("chathub", "prompt_built", "text_len", len(req.Text), "tools_len", len(req.Tools), "payload_len", len(payload))
 	if c.Trace != nil && (chTrace || len(req.Attachments) > 0) {
 		meta := map[string]any{"stage": "chathub_payload", "attachment_count": len(req.Attachments), "payload_has_attachments": strings.Contains(payload, `"attachments"`), "attachments": []map[string]any{}}
 		for _, a := range req.Attachments {
@@ -551,7 +551,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		c.Trace(meta)
 	}
-	log.Printf("chathub timing handshake_ms=%d", time.Since(dialStarted).Milliseconds())
+	applog.Debug("chathub", "handshake_completed", "duration_ms", time.Since(dialStarted).Milliseconds())
 	payloadSentAt := time.Now()
 	ts := Timestamps{RequestSent: payloadSentAt.UTC().Format(time.RFC3339Nano)}
 	if err := wsWrite(websocket.TextMessage, []byte(payload)); err != nil {
@@ -573,10 +573,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return ctx.Err()
 		}
 		if chTrace {
-			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
+			applog.Debug("chathub", "delta_emitted", "len", len(d), "streamed_len", streamed.Len()+len(d), "preview", truncate(d, 80))
 		}
 		if streamed.Len() == 0 {
-			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
+			applog.Debug("chathub", "first_delta_received", "duration_ms", time.Since(payloadSentAt).Milliseconds(), "len", len(d))
 			ts.FirstTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
 			phase = PhaseStreaming
 		}
@@ -634,7 +634,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return nil
 		}
 		if chTrace {
-			log.Printf("[trace:emitSnapshot] cur=%d snapshot=%d", streamed.Len(), len(snapshot))
+			applog.Debug("chathub", "snapshot_emitted", "current_len", streamed.Len(), "snapshot_len", len(snapshot))
 		}
 		if imageLimitDetected(snapshot) {
 			return ErrImageLimit
@@ -661,7 +661,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		skippedSnapshots++
 		if chTrace {
-			log.Printf("[trace:emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
+			applog.Debug("chathub", "snapshot_skipped", "current_len", len(cur), "snapshot_len", len(snapshot), "reason", "non_prefix_rewrite")
 		}
 		return nil
 	}
@@ -789,7 +789,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				continue
 			}
 			if chTrace {
-				log.Printf("[trace:ws] frame_len=%d preview=%q", len(part), truncate(part, 120))
+				applog.Debug("chathub", "websocket_frame_received", "frame_len", len(part), "preview", truncate(part, 120))
 			}
 			b := []byte(part)
 			events = append(events, json.RawMessage(b))
@@ -1028,7 +1028,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if res, ok := item["result"].(map[string]any); ok {
 						rawResult, _ = res["value"].(string)
 						if rawResult != "" && rawResult != "Success" {
-							log.Printf("[chathub] result.value=%q (non-Success)", rawResult)
+							applog.Warn("chathub", "non_success_result", "result", rawResult)
 							low := strings.ToLower(rawResult)
 							if strings.Contains(low, "throttl") {
 								returnConn = false
@@ -1040,7 +1040,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						if mi, ok := res["meteringInformation"]; ok && mi != nil {
 							meteringInformation = mi
 							if meterErr := checkMeteringError(mi); meterErr != nil {
-								log.Printf("[chathub] meteringError in type:2 frame: %v", meterErr)
+								applog.Warn("chathub", "metering_error", "error", meterErr)
 								returnConn = false
 								return Result{}, meterErr
 							}
@@ -1085,7 +1085,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				phase = PhaseCompleted
 				ts.LastTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
-				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d skipped_snapshots=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events), skippedSnapshots)
+				applog.Debug("chathub", "completion_frame_received", "duration_ms", time.Since(payloadSentAt).Milliseconds(), "streamed_text_len", streamed.Len(), "events", len(events), "skipped_snapshots", skippedSnapshots)
 				// Guard against streaming a rate-limit notice out as content
 				// before finalizeText delivers a missing tail. The type-2
 				// handler already rejects notice finals, so this only fires
@@ -1182,7 +1182,7 @@ func finalizeText(streamedText, final string, skipped int, emit func(string) err
 		}
 		return final, nil
 	}
-	log.Printf("[emitSnapshot] streamed text diverged from final result (streamed=%d final=%d skipped_snapshots=%d); using final", len(streamedText), len(final), skipped)
+	applog.Warn("chathub", "streamed_text_diverged", "streamed_len", len(streamedText), "final_len", len(final), "skipped_snapshots", skipped, "action", "use_final")
 	return final, nil
 }
 
@@ -1346,17 +1346,17 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		}
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
-			log.Printf("[upload] http error: %v", err)
+			applog.Warn("chathub", "upload_http_failed", "error", err)
 			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		resp.Body.Close()
 		if readErr != nil {
-			log.Printf("[upload] read error: %v", readErr)
+			applog.Warn("chathub", "upload_response_read_failed", "error", readErr)
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			log.Printf("[upload] status %s: %s", resp.Status, strings.TrimSpace(string(data[:minInt(len(data), 500)])))
+			applog.Warn("chathub", "upload_http_status_failed", "status", resp.Status, "response", strings.TrimSpace(string(data[:minInt(len(data), 500)])))
 			continue
 		}
 		var out struct {
@@ -1368,11 +1368,11 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(data, &out); err != nil {
-			log.Printf("[upload] json error: %v", err)
+			applog.Warn("chathub", "upload_response_decode_failed", "error", err)
 			continue
 		}
 		if out.Result.Value != "Success" || out.DocID == "" {
-			log.Printf("[upload] failed: %s", strings.TrimSpace(string(data)))
+			applog.Warn("chathub", "upload_failed", "response", strings.TrimSpace(string(data)))
 			continue
 		}
 		a.DocID = out.DocID

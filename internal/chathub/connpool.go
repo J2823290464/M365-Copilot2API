@@ -2,7 +2,7 @@ package chathub
 
 import (
 	"context"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"net/http"
 	"strings"
 	"sync"
@@ -134,14 +134,14 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 
 	if picked != nil {
 		picked.taken.Store(true)
-		log.Printf("[connpool] hit oid=%s age_ms=%d", oid, time.Since(picked.created).Milliseconds())
+		applog.Info("chathub", "connection_pool_hit", "oid", oid, "age_ms", time.Since(picked.created).Milliseconds())
 		return picked.conn, &picked.writeMu, picked.frames, picked.errs, true, nil
 	}
 
 	conn, resp, err := p.dialer.DialContext(ctx, wsURL, p.header.Clone())
 	if err != nil {
 		if resp != nil {
-			log.Printf("[connpool] dial failed oid=%s status=%d", oid, resp.StatusCode)
+			applog.Warn("chathub", "connection_pool_dial_failed", "oid", oid, "status", resp.StatusCode)
 		}
 		return nil, nil, nil, nil, false, err
 	}
@@ -164,22 +164,22 @@ func (p *ConnPool) Warm(ctx context.Context, acc Account, wsURL string) {
 	conn, resp, err := p.dialer.DialContext(ctx, wsURL, p.header.Clone())
 	if err != nil {
 		if resp != nil {
-			log.Printf("[connpool] warm dial failed oid=%s status=%d err=%v", acc.OID, resp.StatusCode, err)
+			applog.Warn("chathub", "connection_pool_warm_dial_failed", "oid", acc.OID, "status", resp.StatusCode, "error", err)
 		} else {
-			log.Printf("[connpool] warm dial failed oid=%s err=%v", acc.OID, err)
+			applog.Warn("chathub", "connection_pool_warm_dial_failed", "oid", acc.OID, "error", err)
 		}
 		return
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+"\x1e")); err != nil {
-		log.Printf("[connpool] warm handshake send failed: %v", err)
+		applog.Warn("chathub", "connection_pool_warm_handshake_send_failed", "error", err)
 		conn.Close()
 		return
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, _, err = conn.ReadMessage()
 	if err != nil {
-		log.Printf("[connpool] warm handshake recv failed: %v", err)
+		applog.Warn("chathub", "connection_pool_warm_handshake_receive_failed", "error", err)
 		conn.Close()
 		return
 	}
@@ -196,7 +196,7 @@ func (p *ConnPool) Warm(ctx context.Context, acc Account, wsURL string) {
 	p.mu.Unlock()
 	p.startPark(key, pc)
 
-	log.Printf("[connpool] warmed connection oid=%s tid=%s", acc.OID, acc.TID)
+	applog.Info("chathub", "connection_pool_warmed", "oid", acc.OID, "tid", acc.TID)
 }
 
 func (p *ConnPool) WarmWithProbe(ctx context.Context, acc Account, wsURL string) {

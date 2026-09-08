@@ -1,7 +1,7 @@
 package web
 
 import (
-	"log"
+	"m365-copilot2api/internal/applog"
 	"os"
 	"sort"
 	"strconv"
@@ -18,7 +18,7 @@ func (s *Server) StartAutoCleanup() {
 		strings.EqualFold(os.Getenv("M365_AUTO_CLEANUP"), "false") ||
 		strings.EqualFold(os.Getenv("M365_AUTO_CLEANUP"), "no") ||
 		strings.EqualFold(os.Getenv("M365_AUTO_CLEANUP"), "off") {
-		log.Printf("[auto-cleanup] disabled via M365_AUTO_CLEANUP")
+		applog.Info("auto_cleanup", "disabled", "reason", "M365_AUTO_CLEANUP")
 		return
 	}
 
@@ -44,7 +44,7 @@ func (s *Server) StartAutoCleanup() {
 		}
 	}
 
-	log.Printf("[auto-cleanup] enabled interval=%s max_age=%s keep_n=%d", interval, maxAge, keepN)
+	applog.Info("auto_cleanup", "enabled", "interval", interval, "max_age", maxAge, "keep_n", keepN)
 	go func() {
 		for {
 			time.Sleep(interval)
@@ -68,7 +68,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 	for round := 0; round < 100; round++ {
 		chats, err := m365CloudClient.ListConversations()
 		if err != nil {
-			log.Printf("[auto-cleanup] list failed: %v", err)
+			applog.Warn("auto_cleanup", "list_failed", "error", err)
 			return
 		}
 		if len(chats) == 0 {
@@ -101,7 +101,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		anyDeleted := false
 		for _, c := range stale {
 			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
-				log.Printf("[auto-cleanup] delete %s failed: %v", c.id, err)
+				applog.Warn("auto_cleanup", "delete_failed", "conversation_id", c.id, "error", err)
 				continue
 			}
 			s.dropConversation(c.id)
@@ -112,7 +112,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		for i := keepN; i < len(rest); i++ {
 			c := rest[i]
 			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
-				log.Printf("[auto-cleanup] delete %s failed: %v", c.id, err)
+				applog.Warn("auto_cleanup", "delete_failed", "conversation_id", c.id, "error", err)
 				continue
 			}
 			s.dropConversation(c.id)
@@ -124,7 +124,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		}
 	}
 	if deleted > 0 {
-		log.Printf("[auto-cleanup] removed %d idle conversations", deleted)
+		applog.Info("auto_cleanup", "idle_conversations_removed", "count", deleted)
 	}
 }
 

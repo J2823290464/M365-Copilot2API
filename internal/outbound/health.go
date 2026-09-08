@@ -3,7 +3,7 @@ package outbound
 import (
 	"context"
 	"fmt"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,7 +58,7 @@ func (p *Pool) Check(ctx context.Context, raw string) (time.Duration, error) {
 	if err != nil {
 		p.mark(raw, err)
 		p.setHealth(raw, "unreachable")
-		log.Printf("proxy health failed proxy=%s target=%s latency=%s err=%v", redactProxy(raw), target, lat, err)
+		applog.Warn("outbound", "proxy_health_failed", "proxy", redactProxy(raw), "target", target, "latency", lat, "error", err)
 		return lat, err
 	}
 	status := resp.Status

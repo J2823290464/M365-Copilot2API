@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
@@ -165,7 +165,7 @@ func requestTokenTenant(form url.Values, endpoint string, caller string, oid, ti
 			diff = -diff
 		}
 		if diff > 60*time.Second {
-			log.Printf("[auth] ExpiresAt drift %.0fs from JWT exp; using JWT exp", diff.Seconds())
+			applog.Warn("auth", "expires_at_drift", "drift_seconds", diff.Seconds(), "action", "use_jwt_exp")
 			set.ExpiresAt = jwtExp
 		}
 	}
@@ -228,7 +228,7 @@ func requestToken(form url.Values) (TokenSet, error) {
 			diff = -diff
 		}
 		if diff > 60*time.Second {
-			log.Printf("[auth] ExpiresAt drift %.0fs from JWT exp; using JWT exp", diff.Seconds())
+			applog.Warn("auth", "expires_at_drift", "drift_seconds", diff.Seconds(), "action", "use_jwt_exp")
 			set.ExpiresAt = jwtExp
 		}
 	}

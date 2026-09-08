@@ -12,7 +12,7 @@
 package main
 
 import (
-	"log"
+	"m365-copilot2api/internal/applog"
 	"m365-copilot2api/internal/outbound"
 	"m365-copilot2api/internal/web"
 	"net/http"
@@ -50,7 +50,7 @@ func initServer() {
 	// StartAutoCleanup/StartPreheatPool are long-running loops; skip them in
 	// an ephemeral serverless environment where instances are short-lived.
 	handler = s.Routes()
-	log.Println("m365-copilot2api serverless instance ready")
+	applog.Info("api", "serverless_instance_ready")
 }
 
 // Handler is invoked by the Vercel Go runtime for each request.

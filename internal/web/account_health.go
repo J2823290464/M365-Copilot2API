@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"strings"
 	"sync"
 	"time"
@@ -669,7 +669,7 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 	if h.recoveryArmed[accountID] {
 		h.disabled[accountID] = true
 		delete(h.cooldown, accountID)
-		log.Printf("[account-health] account=%s disabled after failure following cooldown recovery category=%s", accountID, cat)
+		applog.Warn("web", "account_disabled_after_cooldown_recovery_failure", "account_id", accountID, "category", cat)
 		return
 	}
 	h.failureStreak[accountID]++

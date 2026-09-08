@@ -4,7 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"net"
 	"net/http"
 	"os"
@@ -283,9 +283,9 @@ func auditLog(r *http.Request, event, detail string) {
 		ip = clientIP(r)
 	}
 	if detail != "" {
-		log.Printf("[audit] event=%s ip=%s detail=%s", event, ip, detail)
+		applog.Info("audit", event, "ip", ip, "detail", detail)
 	} else {
-		log.Printf("[audit] event=%s ip=%s", event, ip)
+		applog.Info("audit", event, "ip", ip)
 	}
 }
 

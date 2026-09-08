@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"m365-copilot2api/internal/applog"
 	"m365-copilot2api/internal/outbound"
 	"m365-copilot2api/internal/web"
 	"net/http"
@@ -21,15 +21,15 @@ func main() {
 		}
 	}
 	if err := web.ApplyTimezoneEnv(); err != nil {
-		log.Fatal(err)
+		applog.FatalError("server", "apply_timezone_failed", err)
 	}
 	web.ApplyStartupSettingsEnv()
 	if err := outbound.ConfigureFromEnv(); err != nil {
-		log.Fatalf("configure outbound proxy: %v", err)
+		applog.FatalError("server", "configure_outbound_proxy_failed", err)
 	}
 	s, e := web.New()
 	if e != nil {
-		log.Fatal(e)
+		applog.FatalError("server", "initialize_web_server_failed", e)
 	}
 	s.InitM365CloudClient()
 	s.StartAutoCleanup()
@@ -40,7 +40,7 @@ func main() {
 	if v := os.Getenv("M365_LISTEN"); v != "" {
 		listen = v
 	}
-	log.Printf("m365-copilot2api listening on http://%s\\n", listen)
+	applog.Info("server", "listening", "address", listen)
 	server := &http.Server{
 		Addr:              listen,
 		Handler:           s.Routes(),
@@ -56,12 +56,12 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("graceful shutdown: %v", err)
+			applog.Error("server", "graceful_shutdown_failed", "error", err)
 		}
 	}()
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		applog.FatalError("server", "serve_failed", err)
 	}
 	web.StopPersistLoop()
-	log.Println("shutdown complete")
+	applog.Info("server", "shutdown_complete")
 }
