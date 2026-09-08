@@ -1171,15 +1171,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 //     be retracted, but final is returned as the Result text so non-stream
 //     callers and conversation history stay correct.
 func finalizeText(streamedText, final string, skipped int, emit func(string) error) (string, error) {
-	if final == "" || len(final) <= len(streamedText) {
-		if streamedText == "" {
-			return final, nil
-		}
+	if final == "" {
 		return streamedText, nil
 	}
 	if strings.HasPrefix(final, streamedText) {
-		if err := emit(final[len(streamedText):]); err != nil {
-			return "", err
+		if len(final) > len(streamedText) {
+			if err := emit(final[len(streamedText):]); err != nil {
+				return "", err
+			}
 		}
 		return final, nil
 	}

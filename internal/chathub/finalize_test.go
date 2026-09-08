@@ -14,7 +14,7 @@ func collectEmit(out *[]string) func(string) error {
 	}
 }
 
-func TestFinalizeTextKeepsStreamedWhenFinalNotLonger(t *testing.T) {
+func TestFinalizeTextUsesAuthoritativeFinalWhenPresent(t *testing.T) {
 	cases := []struct {
 		name     string
 		streamed string
@@ -24,8 +24,8 @@ func TestFinalizeTextKeepsStreamedWhenFinalNotLonger(t *testing.T) {
 		{"both empty", "", "", ""},
 		{"final empty", "hello", "", "hello"},
 		{"equal", "答案在这里", "答案在这里", "答案在这里"},
-		{"final shorter", "a longer streamed answer", "short", "a longer streamed answer"},
-		{"same length different content", "abcd", "wxyz", "abcd"},
+		{"final shorter", "a longer streamed answer", "short", "short"},
+		{"same length different content", "abcd", "wxyz", "wxyz"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
