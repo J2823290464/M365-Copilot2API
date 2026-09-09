@@ -2062,22 +2062,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	planningMode := s.settings.get().ToolPlanningMode
 	toolCfg := s.settings.get()
 	originalToolChoice := body.ToolChoice
-	forceClientTool := false
-	clientToolAvailable := hasClientWorkspaceTool(toolMaps)
-	clientToolIntent := false
-	if toolCfg.AutoClientToolUse && clientToolAvailable && (body.ToolChoice == nil || fmt.Sprint(body.ToolChoice) == "auto") {
-		switch toolCfg.ClientToolPermission {
-		case "auto_review":
-			clientToolIntent = localToolIntent(answerPrompt)
-			forceClientTool = clientToolIntent
-		case "full_access":
-			forceClientTool = true
-		}
-	}
-	if forceClientTool {
-		body.ToolChoice = "required"
-	}
-	log.Printf("[tool-config] id=%s planning_mode=%s auto_client_tools=%t permission=%s declared_tools=%d client_tool_available=%t intent_match=%t tool_choice_in=%s tool_choice_out=%s forced=%t", requestID, planningMode, toolCfg.AutoClientToolUse, toolCfg.ClientToolPermission, len(toolMaps), clientToolAvailable, clientToolIntent, logToolChoice(originalToolChoice), logToolChoice(body.ToolChoice), forceClientTool)
+	originalToolCount := len(toolMaps)
+	toolMaps, body.ToolChoice = applyClientToolPermission(toolCfg.ClientToolPermission, toolMaps, body.ToolChoice, answerPrompt)
+	forceClientTool := logToolChoice(body.ToolChoice) == "required" && logToolChoice(originalToolChoice) != "required"
+	clientToolAvailable := len(toolMaps) > 0
+	clientToolIntent := toolCfg.ClientToolPermission == "auto_review" && len(toolMaps) > 0
+	log.Printf("[tool-config] id=%s planning_mode=%s auto_client_tools=%t permission=%s declared_tools=%d selected_tools=%d client_tool_available=%t intent_match=%t tool_choice_in=%s tool_choice_out=%s forced=%t", requestID, planningMode, toolCfg.AutoClientToolUse, toolCfg.ClientToolPermission, originalToolCount, len(toolMaps), clientToolAvailable, clientToolIntent, logToolChoice(originalToolChoice), logToolChoice(body.ToolChoice), forceClientTool)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()

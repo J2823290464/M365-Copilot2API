@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // maxRouterContextChars caps how much of the flattened conversation is embedded in a
@@ -154,11 +155,12 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 func localToolIntent(prompt string) bool {
 	low := strings.ToLower(prompt)
 	keywords := []string{"修订", "审订", "核改", "批改", "更正", "订正", "微调", "局部调整", "结构性调整", "推翻重来", "版本迭代", "拟订", "增删", "措辞修改", "行文规范", "修改建议", "修订记录", "变更申请", "最终定稿", "版本回退",
-	                    "润色", "打磨", "炼字", "降重", "扩写", "精炼", "重组", "调整", "优化", "审稿", "校对", "换角度", "情绪强化", "批注", "全局修改", "软性修改",
-	                    "调色", "统一", "构图调整", "细化", "简化", "微交互优化", "动效参数调整", "间距", "视觉降噪", "迭代", "优化视觉表现", "输出切图", "还原走查", "微动一下", "细节收尾", "整体感把控",
-	                     "重构", "优化", "修复", "补丁", "更新", "热修复", "回滚", "覆盖", "迁移", "Diff", "Commit", "Merge", "冲突解决",
-	                     "优化一下", "细化", "复盘后调整", "换一种思路", "重新梳理", "微调", "调整", "补齐", "核对", "优化", "重组", "拆分", "精简", "重塑", "推翻", "重构", "重新定义", "增强", "减弱", "明确",
-	                     "重写", "改写", "拼写纠错", "格式规范化", "时间调换", "顺序重排", "删减冗余", "替换配图", "音量调整", "裁剪拼接","新增","修改","删除"}
+		"润色", "打磨", "炼字", "降重", "扩写", "精炼", "重组", "调整", "优化", "审稿", "校对", "换角度", "情绪强化", "批注", "全局修改", "软性修改",
+		"调色", "统一", "构图调整", "细化", "简化", "微交互优化", "动效参数调整", "间距", "视觉降噪", "迭代", "优化视觉表现", "输出切图", "还原走查", "微动一下", "细节收尾", "整体感把控",
+		"重构", "优化", "修复", "补丁", "更新", "热修复", "回滚", "覆盖", "迁移", "Diff", "Commit", "Merge", "冲突解决",
+		"优化一下", "细化", "复盘后调整", "换一种思路", "重新梳理", "微调", "调整", "补齐", "核对", "优化", "重组", "拆分", "精简", "重塑", "推翻", "重构", "重新定义", "增强", "减弱", "明确",
+		"重写", "改写", "拼写纠错", "格式规范化", "时间调换", "顺序重排", "删减冗余", "替换配图", "音量调整", "裁剪拼接", "新增", "修改", "删除",
+		"查看本地", "检查本机", "读取工作区", "检查代码仓库", "项目源码", "inspect local workspace", "read repository files"}
 	for _, keyword := range keywords {
 		if strings.Contains(low, strings.ToLower(keyword)) {
 			return true
@@ -234,4 +236,64 @@ func isClientWorkspaceName(value string) bool {
 	default:
 		return false
 	}
+}
+
+func applyClientToolPermission(permission string, tools []map[string]any, toolChoice any, prompt string) ([]map[string]any, any) {
+	if permission == "default" {
+		return tools, toolChoice
+	}
+
+	if permission == "full_access" {
+		if len(tools) > 0 && !isToolChoiceNone(toolChoice) {
+			return tools, "required"
+		}
+		return tools, toolChoice
+	}
+
+	if permission != "auto_review" {
+		return tools, toolChoice
+	}
+
+	selected := filterRelevantClientTools(tools, prompt)
+	return selected, "auto"
+}
+
+func isToolChoiceNone(choice any) bool {
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice)), "none")
+}
+
+func filterRelevantClientTools(tools []map[string]any, prompt string) []map[string]any {
+	promptTerms := toolRoutingTerms(prompt)
+	localIntent := localToolIntent(prompt)
+	selected := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		description, _ := fn["description"].(string)
+		if localIntent && (isClientWorkspaceType(fmt.Sprint(tool["type"])) || isClientWorkspaceName(name)) {
+			selected = append(selected, tool)
+			continue
+		}
+		for term := range toolRoutingTerms(name + " " + description) {
+			if _, ok := promptTerms[term]; ok {
+				selected = append(selected, tool)
+				break
+			}
+		}
+	}
+	return selected
+}
+
+func toolRoutingTerms(value string) map[string]struct{} {
+	value = strings.ToLower(value)
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsNumber(r))
+	})
+	terms := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if len([]rune(part)) >= 2 {
+			terms[part] = struct{}{}
+		}
+	}
+	return terms
 }

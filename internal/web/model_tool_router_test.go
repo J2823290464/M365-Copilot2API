@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -106,4 +107,45 @@ func TestModelToolRouterPromptStaysWithinBudget(t *testing.T) {
 			t.Fatalf("compact tool defs missing %s", name)
 		}
 	}
+}
+
+func TestApplyClientToolPermissionDefaultPreservesRequest(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "read_file"}}}
+	choice := map[string]any{"type": "function", "function": map[string]any{"name": "read_file"}}
+	gotTools, gotChoice := applyClientToolPermission("default", tools, choice, "ignore tools")
+	if len(gotTools) != 1 || !reflect.DeepEqual(gotChoice, choice) {
+		t.Fatalf("default changed request: tools=%v choice=%v", gotTools, gotChoice)
+	}
+}
+
+func TestApplyClientToolPermissionAutoReviewFiltersAndKeepsAuto(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "search_code", "description": "search repository code"}},
+		{"type": "function", "function": map[string]any{"name": "send_email", "description": "send an email message"}},
+	}
+	gotTools, gotChoice := applyClientToolPermission("auto_review", tools, "required", "search repository code for the handler")
+	if fmt.Sprint(gotChoice) != "auto" {
+		t.Fatalf("auto_review choice = %v, want auto", gotChoice)
+	}
+	if len(gotTools) != 1 || toolFunctionName(gotTools[0]) != "search_code" {
+		t.Fatalf("auto_review selected unexpected tools: %v", gotTools)
+	}
+}
+
+func TestApplyClientToolPermissionFullAccessRequiresAnyDeclaredTool(t *testing.T) {
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "send_email"}}}
+	gotTools, gotChoice := applyClientToolPermission("full_access", tools, "auto", "hello")
+	if len(gotTools) != 1 || fmt.Sprint(gotChoice) != "required" {
+		t.Fatalf("full_access result: tools=%v choice=%v", gotTools, gotChoice)
+	}
+	_, noneChoice := applyClientToolPermission("full_access", tools, "none", "hello")
+	if fmt.Sprint(noneChoice) != "none" {
+		t.Fatalf("full_access overrode explicit none: %v", noneChoice)
+	}
+}
+
+func toolFunctionName(tool map[string]any) string {
+	fn, _ := tool["function"].(map[string]any)
+	name, _ := fn["name"].(string)
+	return name
 }
