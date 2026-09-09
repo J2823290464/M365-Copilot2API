@@ -2032,14 +2032,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[conv-cache] miss account=%s model=%s", acc.ID, convCacheModel)
 	}
 
-	// Normalize tools once. Selection is always made by the upstream model;
-	// the gateway only validates its structured decision and converts protocols.
-	toolMaps := make([]map[string]any, 0, len(body.Tools))
-	for _, tool := range body.Tools {
-		var f map[string]any
-		_ = json.Unmarshal(tool.Function, &f)
-		toolMaps = append(toolMaps, map[string]any{"type": tool.Type, "function": f})
-	}
+	// Build the effective tool set for this request.
+	toolCfg := s.settings.get()
+	registryTools := mcp.GlobalToolRegistry.ListTools()
+	body.Tools = effectiveClientTools(
+		toolCfg.ClientToolPermission,
+		body.Tools,
+		registryTools,
+	)
+	toolMaps := normalizeToolMaps(body.Tools)
 	if body.ToolChoice == nil && len(toolMaps) > 0 {
 		body.ToolChoice = "auto"
 	}
@@ -2059,15 +2060,57 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		return valid, len(rejected)
 	}
-	planningMode := s.settings.get().ToolPlanningMode
-	toolCfg := s.settings.get()
+	planningMode := toolCfg.ToolPlanningMode
 	originalToolChoice := body.ToolChoice
-	originalToolCount := len(toolMaps)
-	toolMaps, body.ToolChoice = applyClientToolPermission(toolCfg.ClientToolPermission, toolMaps, body.ToolChoice, answerPrompt)
-	forceClientTool := logToolChoice(body.ToolChoice) == "required" && logToolChoice(originalToolChoice) != "required"
-	clientToolAvailable := len(toolMaps) > 0
-	clientToolIntent := toolCfg.ClientToolPermission == "auto_review" && len(toolMaps) > 0
-	log.Printf("[tool-config] id=%s planning_mode=%s auto_client_tools=%t permission=%s declared_tools=%d selected_tools=%d client_tool_available=%t intent_match=%t tool_choice_in=%s tool_choice_out=%s forced=%t", requestID, planningMode, toolCfg.AutoClientToolUse, toolCfg.ClientToolPermission, originalToolCount, len(toolMaps), clientToolAvailable, clientToolIntent, logToolChoice(originalToolChoice), logToolChoice(body.ToolChoice), forceClientTool)
+	clientToolCount := len(body.Tools)
+	registryToolCount := len(registryTools)
+
+	// Decide whether to force a tool call.
+	isAutomatic := body.ToolChoice == nil ||
+		strings.EqualFold(
+			strings.TrimSpace(fmt.Sprint(body.ToolChoice)),
+			"auto",
+		)
+	forceClientTool := false
+	clientToolAvailable := hasClientWorkspaceTool(toolMaps)
+	clientToolIntent := false
+
+	if toolCfg.AutoClientToolUse &&
+		len(toolMaps) > 0 &&
+		isAutomatic {
+
+		switch toolCfg.ClientToolPermission {
+		case "auto_review":
+			clientToolIntent = localToolIntent(answerPrompt)
+			forceClientTool = clientToolAvailable && clientToolIntent
+		case "full_access":
+			forceClientTool = true
+		}
+	}
+
+	if forceClientTool {
+		body.ToolChoice = "required"
+	}
+
+	log.Printf(
+		"[tool-config] id=%s planning_mode=%s auto_client_tools=%t "+
+			"permission=%s client_tools=%d registry_tools=%d "+
+			"effective_tools=%d client_tool_available=%t "+
+			"intent_match=%t tool_choice_in=%s tool_choice_out=%s "+
+			"forced=%t",
+		requestID,
+		planningMode,
+		toolCfg.AutoClientToolUse,
+		toolCfg.ClientToolPermission,
+		clientToolCount,
+		registryToolCount,
+		len(toolMaps),
+		clientToolAvailable,
+		clientToolIntent,
+		logToolChoice(originalToolChoice),
+		logToolChoice(body.ToolChoice),
+		forceClientTool,
+	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
