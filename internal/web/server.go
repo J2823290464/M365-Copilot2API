@@ -1781,7 +1781,6 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		// upstream context budget; the router turn already made the tool decision.
 		req.MCPServerURL = mcpServerURL
 		// Auto-inject tools based on keyword matching in the user prompt.
-		body.Tools = autoInjectTools(answerPrompt, body.Tools, nil)
 		req.Tools = body.Tools
 		if req.ToolChoice == nil {
 			req.ToolChoice = body.ToolChoice
@@ -2037,6 +2036,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Build the effective tool set for this request.
 	toolCfg := s.settings.get()
 	registryTools := mcp.GlobalToolRegistry.ListTools()
+	body.Tools = autoInjectTools(answerPrompt, body.Tools, nil)
 	body.Tools = effectiveClientTools(
 		toolCfg.ClientToolPermission,
 		body.Tools,
