@@ -301,6 +301,25 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 		}
 	}
 
+	// fallback: same tenant had a very recent active session (no client key provided).
+	// Only applies when there are multiple messages (tool loop) to avoid preventing
+	// the creation of genuinely new conversations.
+	if explicitID == "" && hasAssistantReply(body.Messages) {
+		if fallback := sr.recentActiveSessionForTenant(tenant, projectID); fallback != "" {
+			sess := sr.sessions[fallback]
+			sess.LastUsedAt = time.Now().UTC()
+			sr.sessions[fallback] = sess
+			sr.persist.markDirty()
+			return ResolveResult{
+				SessionID:      sess.SessionID,
+				ConversationID: sess.ConversationID,
+				AccountID:      sess.AccountID,
+				MatchedBy:      "tenant_recent_fallback",
+				IsNew:          false,
+				HistoryLen:     len(sess.ContextHistory),
+			}
+		}
+	}
 	return ResolveResult{IsNew: true}
 }
 
@@ -600,6 +619,46 @@ func (sr *sessionResolver) ListSessions() []sessionBinding {
 		return out[i].LastUsedAt.After(out[j].LastUsedAt)
 	})
 	return out
+}
+
+// recentActiveSessionForTenant returns the most recently used session for a tenant
+// within a short window (5 minutes), used as a fallback when the client does not
+// provide any stable session identifier.
+// hasAssistantReply checks if the message history contains an assistant reply,
+// which indicates this is a continuation (tool loop or multi-turn chat)
+// rather than a brand-new conversation.
+func hasAssistantReply(msgs []oaiMsg) bool {
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID string) string {
+	if tenant == "" {
+		return ""
+	}
+	now := time.Now().UTC()
+	var best string
+	var bestTime time.Time
+	for id, sess := range sr.sessions {
+		if sess.Tenant != tenant {
+			continue
+		}
+		if sess.ProjectID != projectID {
+			continue
+		}
+		if now.Sub(sess.LastUsedAt) > 5*time.Minute {
+			continue
+		}
+		if bestTime.IsZero() || sess.LastUsedAt.After(bestTime) {
+			best = id
+			bestTime = sess.LastUsedAt
+		}
+	}
+	return best
 }
 
 func (sr *sessionResolver) ActiveSessionCounts() map[string]int {
