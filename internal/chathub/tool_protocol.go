@@ -9,33 +9,55 @@ import (
 // toolProtocolPrompt follows the community-compatible M365 convention:
 // definitions are wrapped in <tools>, and calls are emitted as a fenced block
 // whose info string is the exact tool name.
-func toolProtocolPrompt(text string, tools []Tool, choice any, hasPlugins bool) string {
-	if len(tools) == 0 || strings.EqualFold(fmt.Sprint(choice), "none") {
-		if hasPlugins {
-			return text
-		}
-		return fmt.Sprintf("Please answer the following request in full. Do not truncate or abbreviate your response.\n\n%s", text)
-	}
-	if hasPlugins {
+func toolProtocolPrompt(text string, tools []Tool, choice any) string {
+	if len(tools) == 0 || toolChoiceIsNone(choice) {
 		return text
 	}
-	var defs []string
-	for _, t := range tools {
-		var f struct {
-			Name, Description string
-			Parameters        json.RawMessage `json:"parameters"`
+	defs := make([]string, 0, len(tools))
+
+	for _, tool := range tools {
+		var fn struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
 		}
-		if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
+
+		if err := json.Unmarshal(tool.Function, &fn); err != nil {
 			continue
 		}
-		params := strings.TrimSpace(string(f.Parameters))
-		if params == "" || params == "null" {
-			params = "{}"
+
+		if strings.TrimSpace(fn.Name) == "" {
+			continue
 		}
-		defs = append(defs, fmt.Sprintf("%s — %s\n```%s\n%s\n```", f.Name, f.Description, f.Name, params))
+
+		parameters := strings.TrimSpace(string(fn.Parameters))
+		if parameters == "" || parameters == "null" {
+			parameters = "{}"
+		}
+
+		defs = append(defs, fmt.Sprintf(
+			"%s - %s\n```%s\n%s\n```",
+			fn.Name,
+			fn.Description,
+			fn.Name,
+			parameters,
+		))
 	}
+
 	if len(defs) == 0 {
 		return text
 	}
-	return fmt.Sprintf("You are an execution agent on the caller's Windows machine. The tools below are real, active, and callable right now. The bash tool runs Windows PowerShell 5.1; Windows paths like D:\\ are directly accessible. Do NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. Do NOT emit backtick-backtick-backtick-python or backtick-backtick-backtick-code blocks for execution — if you need to run code, use the bash tool. Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed.\nWhen the user's request requires a tool, call it by emitting one or more fenced blocks. Each block's info string is the exact tool name and its body is a JSON object of arguments. For independent operations such as listing, searching, and reading unrelated files, emit multiple blocks in one response instead of serial requests. Prefer one broad search or one shell inspection command when an equivalent tool is available. Keep dependent operations and writes sequential. Do not analyze whether tools are registered or available — they are. Do not say a tool is unavailable. Do not wrap the call in XML or Markdown prose. Wait for the tool result before claiming completion.\n\n<tools>\n%s\n</tools>\n\nUser request:\n%s", strings.Join(defs, "\n\n"), text)
+
+	return fmt.Sprintf(`You are an execution agent operating through client tools on the caller's machine.
+    The tools listed below are real, active, and callable for this request. Use the exact tool names shown in the tool definitions. Do not invent aliases or substitute another tool name.
+    Filesystem and command tools execute on the caller's machine, not in the cloud model sandbox. Local paths mentioned in the request, conversation context, or client metadata must be accessed through the available client tools. Do not assume that a path is unavailable merely because it is not visible in the cloud model sandbox.
+    Do not inspect or infer local workspace availability from /mnt/data or from the cloud execution environment.
+    If the request requires inspecting, searching, modifying, testing, or verifying local files, you must attempt an appropriate available client tool before claiming that the path or workspace is inaccessible.
+    If a client tool returns an actual permission, path, approval, or execution error, report that concrete error accurately. Do not claim that access succeeded when the tool failed.
+    When calling a tool, emit exactly one fenced code block whose info string is the exact tool name and whose body is valid JSON matching that tool's schema.
+    <tools>
+    %s
+    </tools>
+    User request:
+    %s`, strings.Join(defs, "\n\n"), text)
 }

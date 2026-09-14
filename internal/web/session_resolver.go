@@ -781,6 +781,18 @@ func sessionIDFromRequest(r *http.Request, body *oaiReq) string {
 			return value
 		}
 	}
+	if raw := strings.TrimSpace(r.Header.Get("X-Codex-Turn-Metadata")); raw != "" {
+		var metadata struct {
+			SessionID string `json:"session_id"`
+			ThreadID  string `json:"thread_id"`
+		}
+
+		if err := json.Unmarshal([]byte(raw), &metadata); err == nil {
+			if value := firstNonEmpty(metadata.SessionID, metadata.ThreadID); value != "" {
+				return value
+			}
+		}
+	}
 	if body != nil {
 		if body.Metadata != nil {
 			if value := firstNonEmpty(body.Metadata.SessionID, body.Metadata.SessionIDC, body.Metadata.ThreadID, body.Metadata.ThreadIDC); value != "" {

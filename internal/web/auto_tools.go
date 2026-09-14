@@ -1,4 +1,4 @@
-﻿package web
+package web
 
 import (
 	"encoding/json"
@@ -56,9 +56,9 @@ var autoToolRegistry = map[string]ToolTemplate{
 			"required": []string{"query"},
 		},
 	},
-	"bash": {
-		Name:        "bash",
-		Description: "Execute a bash/shell command",
+	"shell_command": {
+		Name:        "shell_command",
+		Description: "Runs a Powershell command (Windows) and returns its output.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -84,7 +84,7 @@ var defaultAutoToolRules = []AutoToolRule{
 	},
 	{
 		Patterns:  []string{"run", "execute", "python", "npm", "go build", "docker", "bash", "运行", "执行", "启动"},
-		ToolNames: []string{"bash"},
+		ToolNames: []string{"shell_command"},
 	},
 	{
 		Patterns:  []string{"edit", "modify", "replace", "patch", "update file", "编辑", "修改", "替换", "更新", "新增"},

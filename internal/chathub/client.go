@@ -1410,12 +1410,13 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	// must not receive them as native plugins, otherwise the model re-plans instead
 	// of answering and the schemas burn the context budget.
 	chatTools := req.Tools
+	nativeTools, promptTools := splitRoutedTools(chatTools)
 	chatChoice := req.ToolChoice
 	if req.MCPServerURL != "" {
 		chatTools = nil
 		chatChoice = nil
 	}
-	text := toolProtocolPrompt(req.Text, chatTools, chatChoice, len(clientPlugins(chatTools, req.MCPServerURL)) > 0)
+	text := toolProtocolPrompt(req.Text, promptTools, chatChoice)
 	federatedConns := req.ConnectedFederatedIDs
 	if len(federatedConns) == 0 {
 		federatedConns = []string{"dummyId"}
@@ -1599,7 +1600,7 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"streamingMode":    "ConciseWithPadding",
 		"message":          message,
 
-		"plugins":                   clientPlugins(chatTools, req.MCPServerURL),
+		"Plugins":                   clientPlugins(nativeTools, req.MCPServerURL),
 		"extraExtensionParameters":  map[string]any{},
 		"isSbsSupported":            true,
 		"renderReferencesBehindEOS": true,

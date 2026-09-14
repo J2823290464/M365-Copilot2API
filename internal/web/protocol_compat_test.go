@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -168,5 +169,33 @@ func TestSessionIDFromRequestFallsBackToClientHeader(t *testing.T) {
 
 	if got := sessionIDFromRequest(r, nil); got != "client-session" {
 		t.Fatalf("sessionID=%q, want client-session", got)
+	}
+}
+
+func TestSessionIDFromRequestSupportsCodexTurnMetadata(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Codex-Turn-Metadata", `{"session_id":"codex-session","thread_id":"codex-thread"}`)
+
+	if got := sessionIDFromRequest(r, nil); got != "codex-session" {
+		t.Fatalf("sessionIDFromRequest() = %q, want %q", got, "codex-session")
+	}
+}
+
+func TestSessionIDFromRequestFallsBackToCodexThreadID(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"codex-thread"}`)
+
+	if got := sessionIDFromRequest(r, nil); got != "codex-thread" {
+		t.Fatalf("sessionIDFromRequest() = %q, want %q", got, "codex-thread")
+	}
+}
+
+func TestSessionIDFromRequestIgnoresMalformedCodexTurnMetadata(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Codex-Turn-Metadata", `{invalid`)
+	r.Header.Set("X-Session-Id", "client-session")
+
+	if got := sessionIDFromRequest(r, nil); got != "client-session" {
+		t.Fatalf("sessionIDFromRequest() = %q, want %q", got, "client-session")
 	}
 }
