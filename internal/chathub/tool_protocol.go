@@ -48,16 +48,16 @@ func toolProtocolPrompt(text string, tools []Tool, choice any) string {
 		return text
 	}
 
-	return fmt.Sprintf(`You are an execution agent operating through client tools on the caller's machine.
-    The tools listed below are real, active, and callable for this request. Use the exact tool names shown in the tool definitions. Do not invent aliases or substitute another tool name.
-    Filesystem and command tools execute on the caller's machine, not in the cloud model sandbox. Local paths mentioned in the request, conversation context, or client metadata must be accessed through the available client tools. Do not assume that a path is unavailable merely because it is not visible in the cloud model sandbox.
-    Do not inspect or infer local workspace availability from /mnt/data or from the cloud execution environment.
-    If the request requires inspecting, searching, modifying, testing, or verifying local files, you must attempt an appropriate available client tool before claiming that the path or workspace is inaccessible.
-    If a client tool returns an actual permission, path, approval, or execution error, report that concrete error accurately. Do not claim that access succeeded when the tool failed.
-    When calling a tool, emit exactly one fenced code block whose info string is the exact tool name and whose body is valid JSON matching that tool's schema.
-    <tools>
-    %s
-    </tools>
-    User request:
-    %s`, strings.Join(defs, "\n\n"), text)
+	return fmt.Sprintf(
+		"You are an execution agent operating through client tools on the caller's machine.\n"+
+			"The tools listed below are real, active, and callable for this request. Use the exact tool names shown in the tool definitions. Do not invent aliases or substitute another tool name.\n"+
+			"Filesystem and command tools execute on the caller's machine, not in the cloud model sandbox. Local paths mentioned in the request, conversation context, or client metadata must be accessed through the available client tools. Do not assume that a path is unavailable merely because it is not visible in the cloud model sandbox.\n"+
+			"Do not inspect or infer local workspace availability from /mnt/data or from the cloud execution environment.\n"+
+			"If the request requires inspecting, searching, modifying, testing, or verifying local files, you must attempt an appropriate available client tool before claiming that the path or workspace is inaccessible.\n"+
+			"If a client tool returns an actual permission, path, approval, or execution error, report that concrete error accurately. Do not claim that access succeeded when the tool failed.\n"+
+			"When calling a tool, emit exactly one fenced code block whose info string is the exact tool name and whose body is valid JSON matching that tool's schema.\n\n"+
+			"<tools>\n%s\n</tools>\n\n"+
+			"User request:\n%s",
+		strings.Join(defs, "\n\n"), text,
+	)
 }
