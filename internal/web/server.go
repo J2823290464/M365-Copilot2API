@@ -1851,8 +1851,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	fullMessages := append([]oaiMsg(nil), body.Messages...)
 
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
-    // 请求头日志，非必要不打开
-    // log.Printf("[req-trace] id=%s stage=request_headers headers=%v", requestID, r.Header)
+	// 请求头日志，非必要不打开
+	// log.Printf("[req-trace] id=%s stage=request_headers headers=%v", requestID, r.Header)
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
 		return
@@ -2038,7 +2038,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Build the effective tool set for this request.
 	toolCfg := s.settings.get()
 	registryTools := mcp.GlobalToolRegistry.ListTools()
-	body.Tools = autoInjectTools(answerPrompt, body.Tools, nil)
+	if toolCfg.AutoClientToolUse {
+		body.Tools = autoSelectClientTools(answerPrompt, body.Tools, nil)
+	}
 	body.Tools = effectiveClientTools(
 		toolCfg.ClientToolPermission,
 		body.Tools,

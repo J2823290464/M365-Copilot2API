@@ -2,18 +2,11 @@ package web
 
 import (
 	"encoding/json"
-	"log"
 	"regexp"
 	"strings"
 
 	"m365-copilot2api/internal/chathub"
 )
-
-type ToolTemplate struct {
-	Name        string
-	Description string
-	Parameters  map[string]any
-}
 
 type AutoToolRule struct {
 	Patterns   []string
@@ -21,146 +14,146 @@ type AutoToolRule struct {
 	ToolNames  []string
 }
 
-var autoToolRegistry = map[string]ToolTemplate{
-	"write_file": {
-		Name:        "write_file",
-		Description: "Write content to a file at the specified path",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "Absolute file path"},
-				"content": map[string]any{"type": "string", "description": "Content to write"},
-			},
-			"required": []string{"path", "content"},
-		},
-	},
-	"read_file": {
-		Name:        "read_file",
-		Description: "Read the contents of a file at the specified path",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": "Absolute file path"},
-			},
-			"required": []string{"path"},
-		},
-	},
-	"search_files": {
-		Name:        "search_files",
-		Description: "Search for files or content matching a query pattern",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "description": "Search query or glob pattern"},
-			},
-			"required": []string{"query"},
-		},
-	},
-	"shell_command": {
-		Name:        "shell_command",
-		Description: "Runs a Powershell command (Windows) and returns its output.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command": map[string]any{"type": "string", "description": "Shell command to execute"},
-			},
-			"required": []string{"command"},
-		},
-	},
+type clientToolKind string
+
+const (
+	clientToolKindCustomExec clientToolKind = "custom_exec"
+	clientToolKindRead       clientToolKind = "read"
+	clientToolKindWrite      clientToolKind = "write"
+	clientToolKindSearch     clientToolKind = "search"
+	clientToolKindShell      clientToolKind = "shell"
+)
+
+type clientToolDefinition struct {
+	Name        string
+	Type        string
+	Description string
+	Parameters  map[string]any
 }
 
 var defaultAutoToolRules = []AutoToolRule{
-	{
-		Patterns:  []string{"create file", "write file", "save file", "write a file", "new file", "创建文件", "新增文件", "写入文件", "写文件", "添加", "新建"},
-		ToolNames: []string{"write_file"},
-	},
-	{
-		Patterns:  []string{"read file", "view file", "open file", "read the file", "get file", "查看文件", "读取文件", "打开文件", "看文件", "看一下"},
-		ToolNames: []string{"read_file"},
-	},
-	{
-		Patterns:  []string{"search", "find", "grep", "locate", "search for", "look for", "搜索", "查找", "查询", "寻找", "找一下"},
-		ToolNames: []string{"search_files"},
-	},
-	{
-		Patterns:  []string{"run", "execute", "python", "npm", "go build", "docker", "bash", "运行", "执行", "启动"},
-		ToolNames: []string{"shell_command"},
-	},
-	{
-		Patterns:  []string{"edit", "modify", "replace", "patch", "update file", "编辑", "修改", "替换", "更新", "新增"},
-		ToolNames: []string{"read_file", "write_file"},
-	},
+	{Patterns: []string{"read file", "view file", "open file", "查看文件", "读取文件", "打开文件"}, ToolNames: []string{"read_file"}},
+	{Patterns: []string{"create file", "write file", "save file", "创建文件", "写入文件", "新建"}, ToolNames: []string{"write_file"}},
+	{Patterns: []string{"search", "find", "grep", "搜索", "查找", "查询"}, ToolNames: []string{"search_files"}},
+	{Patterns: []string{"run", "execute", "python", "npm", "docker", "运行", "执行"}, ToolNames: []string{"shell_command"}},
+	{Patterns: []string{"edit", "modify", "replace", "patch", "编辑", "修改", "替换", "更新"}, ToolNames: []string{"read_file", "write_file"}},
 }
 
-func autoInjectTools(prompt string, existingTools []chathub.Tool, rules []AutoToolRule) []chathub.Tool {
+var clientToolNamesByKind = map[clientToolKind][]string{
+	clientToolKindCustomExec: {"exec"},
+	clientToolKindRead:       {"read_file", "read", "Read", "view_file", "open_file"},
+	clientToolKindWrite:      {"write_file", "write", "Write", "create_file", "save_file", "Edit", "apply_patch"},
+	clientToolKindSearch:     {"search_files", "search_file", "find_files", "search", "Grep", "Glob"},
+	clientToolKindShell:      {"shell_command", "powershell", "bash", "Bash", "sh", "shell", "terminal", "cmd"},
+}
+
+var autoToolSemanticNames = map[string]clientToolKind{
+	"read_file":     clientToolKindRead,
+	"write_file":    clientToolKindWrite,
+	"search_files":  clientToolKindSearch,
+	"shell_command": clientToolKindShell,
+}
+
+func autoSelectClientTools(prompt string, clientTools []chathub.Tool, rules []AutoToolRule) []chathub.Tool {
+	definitions := parseClientToolDefinitions(clientTools)
+	intentKinds := matchedAutoToolKinds(prompt, rules)
+	if len(definitions) == 0 || len(intentKinds) == 0 {
+		return clientTools
+	}
+
+	customExec := findClientToolDefinition(definitions, clientToolKindCustomExec)
+	shell := findClientToolDefinition(definitions, clientToolKindShell)
+	selected := make(map[string]bool, len(intentKinds))
+	for _, kind := range intentKinds {
+		definition := findClientToolDefinition(definitions, kind)
+		if definition == nil && customExec != nil {
+			definition = customExec
+		}
+		if definition == nil && shell != nil {
+			definition = shell
+		}
+		if definition != nil {
+			selected[definition.Name] = true
+		}
+	}
+	if len(selected) == 0 {
+		return clientTools
+	}
+
+	result := make([]chathub.Tool, 0, len(selected))
+	for _, tool := range clientTools {
+		if definition := parseClientToolDefinition(tool); definition != nil && selected[definition.Name] {
+			result = append(result, tool)
+		}
+	}
+	return result
+}
+
+func parseClientToolDefinitions(tools []chathub.Tool) []clientToolDefinition {
+	definitions := make([]clientToolDefinition, 0, len(tools))
+	for _, tool := range tools {
+		if definition := parseClientToolDefinition(tool); definition != nil {
+			definitions = append(definitions, *definition)
+		}
+	}
+	return definitions
+}
+
+func parseClientToolDefinition(tool chathub.Tool) *clientToolDefinition {
+	var function struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Parameters  map[string]any `json:"parameters"`
+	}
+	if json.Unmarshal(tool.Function, &function) != nil || strings.TrimSpace(function.Name) == "" {
+		return nil
+	}
+	return &clientToolDefinition{
+		Name:        strings.TrimSpace(function.Name),
+		Type:        strings.TrimSpace(tool.Type),
+		Description: function.Description,
+		Parameters:  function.Parameters,
+	}
+}
+
+func matchedAutoToolKinds(prompt string, rules []AutoToolRule) []clientToolKind {
 	if len(rules) == 0 {
 		rules = defaultAutoToolRules
 	}
-
-	existingNames := make(map[string]bool)
-	for _, t := range existingTools {
-		var fn struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(t.Function, &fn) == nil && fn.Name != "" {
-			existingNames[fn.Name] = true
-		}
-	}
-
-	toAdd := make(map[string]bool)
 	lowerPrompt := strings.ToLower(prompt)
-	matchedRules := 0
+	kinds := make([]clientToolKind, 0)
+	seen := make(map[clientToolKind]bool)
 	for _, rule := range rules {
-		matched := false
 		for _, pattern := range rule.Patterns {
+			matched := false
 			if rule.MatchRegex {
-				if re, err := regexp.Compile("(?i)" + pattern); err == nil && re.MatchString(prompt) {
-					matched = true
-					break
-				}
+				expression, err := regexp.Compile("(?i)" + pattern)
+				matched = err == nil && expression.MatchString(prompt)
 			} else {
-				if strings.Contains(lowerPrompt, strings.ToLower(pattern)) {
-					matched = true
-					break
-				}
+				matched = strings.Contains(lowerPrompt, strings.ToLower(pattern))
 			}
-		}
-		if matched {
-			matchedRules++
+			if !matched {
+				continue
+			}
 			for _, name := range rule.ToolNames {
-				if !existingNames[name] {
-					toAdd[name] = true
+				if kind, ok := autoToolSemanticNames[name]; ok && !seen[kind] {
+					seen[kind] = true
+					kinds = append(kinds, kind)
 				}
+			}
+			break
+		}
+	}
+	return kinds
+}
+
+func findClientToolDefinition(definitions []clientToolDefinition, kind clientToolKind) *clientToolDefinition {
+	for _, preferredName := range clientToolNamesByKind[kind] {
+		for index := range definitions {
+			if strings.EqualFold(definitions[index].Name, preferredName) {
+				return &definitions[index]
 			}
 		}
 	}
-
-	if len(toAdd) == 0 {
-		log.Printf("[auto-tools] no tools injected. matched_rules=%d", matchedRules)
-		return existingTools
-	}
-
-	// Build ordered list of injected tool names for logging.
-	injected := make([]string, 0, len(toAdd))
-	result := make([]chathub.Tool, 0, len(existingTools)+len(toAdd))
-	result = append(result, existingTools...)
-	for name := range toAdd {
-		tmpl, ok := autoToolRegistry[name]
-		if !ok {
-			continue
-		}
-		fnData := map[string]any{
-			"name":        tmpl.Name,
-			"description": tmpl.Description,
-			"parameters":  tmpl.Parameters,
-		}
-		fnJSON, _ := json.Marshal(fnData)
-		result = append(result, chathub.Tool{
-			Type:     "function",
-			Function: fnJSON,
-		})
-		injected = append(injected, name)
-	}
-	log.Printf("[auto-tools] injected tools=%v existing=%d new=%d matched_rules=%d", injected, len(existingTools), len(injected), matchedRules)
-	return result
+	return nil
 }
