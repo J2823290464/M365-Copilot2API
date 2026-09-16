@@ -231,7 +231,7 @@ func isClientWorkspaceType(value string) bool {
 
 func isClientWorkspaceName(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "exec", "execute", "shell", "terminal", "powershell", "bash", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "list_files", "search_files", "search_code", "run_test", "run_tests":
+	case "exec", "execute", "shell", "shell_command", "terminal", "powershell", "bash", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "list_files", "search_files", "search_code", "run_test", "run_tests":
 		return true
 	default:
 		return false

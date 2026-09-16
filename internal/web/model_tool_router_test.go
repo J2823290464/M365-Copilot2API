@@ -65,9 +65,11 @@ func TestLocalToolIntent(t *testing.T) {
 }
 
 func TestHasClientWorkspaceTool(t *testing.T) {
-	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "read_file"}}}
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "shell_command"}},
+	}
 	if !hasClientWorkspaceTool(tools) {
-		t.Fatal("expected client workspace tool")
+		t.Fatal("expected shell_command to be recognized as a client workspace tool")
 	}
 }
 
