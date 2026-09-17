@@ -63,14 +63,18 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		FeatureFlags: s.featureFlags(),
 	}
 	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, request)
-	if err != nil && newSession && shouldFailoverAccount(err) {
-		for attempt := 1; attempt <= 2; attempt++ {
-			select {
-			case <-r.Context().Done():
+	failoverAttempts := 1
+	if err != nil && newSession && shouldFailoverAccount(err) && remainingBudget(ctx) >= minFailoverBudget {
+		for attempt := 2; attempt <= maxAccountAttempts; attempt++ {
+			if remainingBudget(ctx) < minFailoverBudget {
 				break
+			}
+			select {
+			case <-ctx.Done():
+				goto failoverDone
 			case <-time.After(accountRetryDelay(err, attempt)):
 			}
-			if r.Context().Err() != nil {
+			if ctx.Err() != nil {
 				break
 			}
 			next, nextErr := s.nextHealthyAccount(acc.ID)
@@ -78,7 +82,9 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			request.ConversationID, request.SessionID = "", ""
-			res, err = s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, request)
+			failoverCtx := withAccountAttempt(ctx, attempt)
+			failoverAttempts = attempt
+			res, err = s.chatWithAccount(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, request)
 			if err == nil {
 				log.Printf("[account-failover] from=%s to=%s attempt=%d", acc.ID, next.ID, attempt)
 				acc = next
@@ -86,10 +92,12 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+failoverDone:
 	if err != nil {
 		if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
 			s.accountPool.MarkImageLimited(acc.ID)
 		}
+		setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, failoverAttempts, acc.ID)
 		writeUpstreamError(w, err)
 		return
 	}
@@ -110,6 +118,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-M365-Scores", string(b))
 		}
 	}
+	setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, failoverAttempts, acc.ID)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

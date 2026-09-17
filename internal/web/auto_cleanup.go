@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"m365-copilot2api/internal/applog"
 	"os"
 	"sort"
@@ -66,7 +67,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 	}
 	deleted := 0
 	for round := 0; round < 100; round++ {
-		chats, err := m365CloudClient.ListConversations()
+		chats, err := m365CloudClient.ListConversationsContext(context.Background())
 		if err != nil {
 			applog.Warn("auto_cleanup", "list_failed", "error", err)
 			return
@@ -100,7 +101,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 
 		anyDeleted := false
 		for _, c := range stale {
-			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
+			if err := m365CloudClient.DeleteConversationContext(context.Background(), c.id); err != nil {
 				applog.Warn("auto_cleanup", "delete_failed", "conversation_id", c.id, "error", err)
 				continue
 			}
@@ -111,7 +112,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		sort.Slice(rest, func(i, j int) bool { return rest[i].createMs < rest[j].createMs })
 		for i := keepN; i < len(rest); i++ {
 			c := rest[i]
-			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
+			if err := m365CloudClient.DeleteConversationContext(context.Background(), c.id); err != nil {
 				applog.Warn("auto_cleanup", "delete_failed", "conversation_id", c.id, "error", err)
 				continue
 			}

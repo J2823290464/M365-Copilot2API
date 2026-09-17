@@ -150,7 +150,7 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 	if m365CloudClient != nil {
 		cloudAccount, hasCloudAccount := s.tokens.First()
 		var chats []map[string]any
-		chats, cloudErr = m365CloudClient.ListConversations()
+		chats, cloudErr = m365CloudClient.ListConversationsContext(r.Context())
 		for _, chat := range chats {
 			conversationID, _ := chat["conversationId"].(string)
 			if conversationID != "" && !s.isTransientConversation(conversationID) {
@@ -317,7 +317,7 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
-	if err := m365CloudClient.DeleteConversation(body.ConversationID); err != nil {
+	if err := m365CloudClient.DeleteConversationContext(r.Context(), body.ConversationID); err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
 		return
 	}
@@ -349,7 +349,7 @@ func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
 		keepN = 5
 	}
 
-	deleted, err := m365CloudClient.CleanupOldConversations(maxAge, keepN)
+	deleted, err := m365CloudClient.CleanupOldConversationsContext(r.Context(), maxAge, keepN)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
 		return

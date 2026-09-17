@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
+	"m365-copilot2api/internal/outbound"
 	"os"
 	"regexp"
 	"sort"
@@ -127,7 +127,8 @@ func syncUpstreamTones() {
 }
 
 func fetchUpstreamTones() []string {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := outbound.HTTPClient()
+	client.Timeout = 30 * time.Second
 	pageURL := "https://m365.cloud.microsoft/"
 	resp, err := client.Get(pageURL)
 	if err != nil {

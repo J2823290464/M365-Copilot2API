@@ -1399,6 +1399,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	chatSettings := s.settings.get()
+	failoverAttempts := 1
 	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{
 		AccessToken: acc.AccessToken,
 		OID:         acc.OID,
@@ -1422,12 +1423,12 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		// request when the pool has other healthy accounts. Only auto-selected
 		// requests fail over; an explicitly chosen account is respected, and a
 		// conversation-bound chat stays on its account.
-		if body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "") {
+		if body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "") && remainingBudget(ctx) >= minFailoverBudget {
 			next, nerr := s.nextHealthyAccount(acc.ID)
 			if nerr == nil {
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
-				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
+				failoverCtx := withAccountAttempt(ctx, 2)
+				failoverAttempts = 2
+				res2, err2 := s.chatWithAccount(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
 					Text:                  text,
 					Tone:                  body.Tone,
 					ConversationID:        body.ConversationID,
@@ -1459,6 +1460,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
 				s.accountPool.MarkImageLimited(acc.ID)
 			}
+			setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, failoverAttempts, acc.ID)
 			writeUpstreamError(w, err)
 			return
 		}
@@ -1482,6 +1484,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-M365-Scores", string(b))
 		}
 	}
+	setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, failoverAttempts, acc.ID)
 	jsonOut(w, map[string]any{
 		"status":                    "ok",
 		"text":                      res.Text,
@@ -1517,7 +1520,7 @@ func (s *Server) dropTransientConversation(conversationID string) {
 	s.transientConversations[conversationID] = time.Now().UTC()
 	s.transientMu.Unlock()
 	go func(id string) {
-		if err := m365CloudClient.DeleteConversation(id); err != nil {
+		if err := m365CloudClient.DeleteConversationContext(context.Background(), id); err != nil {
 			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
 		}
 	}(conversationID)
@@ -1558,9 +1561,11 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(b.AccountID)
 	if err != nil {
+		setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, 1, "")
 		writeUpstreamError(w, err)
 		return
 	}
+	setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, 1, acc.ID)
 	if acc.OID == "" || acc.TID == "" {
 		if o, t := extractOIDTID(acc.AccessToken); o != "" {
 			acc.OID, acc.TID = o, t
@@ -1992,9 +1997,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	defer releaseAccount()
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
+		setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, 1, accountID)
 		writeUpstreamErrorWithAccount(w, err, accountID)
 		return
 	}
+	openaiAttempts := 1
+	setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, openaiAttempts, acc.ID)
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
 	log.Printf("[session-trace] path=chat project=%q session=%q thread=%q user=%q conv=%q", projectIDFromRequest(r, &body), sessionIDFromRequest(r, &body), metadataThreadID(body.Metadata), body.User, body.ConversationID)
 	if acc.OID == "" || acc.TID == "" {
@@ -2145,10 +2153,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.dropTransientConversation(routeRes.ConversationID)
 		}
 		if routeErr != nil {
-			if IsRateLimited(routeErr) && body.AccountID == "" {
+			if IsRateLimited(routeErr) && body.AccountID == "" && remainingBudget(ctx) >= minFailoverBudget {
 				if next, nerr := s.nextHealthyAccount(acc.ID); nerr == nil {
 					s.accountPool.MarkFailure(acc.ID, routeErr, s.getRateLimitCooldown())
-					routeRes2, routeErr2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+					routeRes2, routeErr2 := s.chatWithAccount(withAccountAttempt(ctx, 2), next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 					if routeErr2 == nil {
 						routeRes = routeRes2
 						acc = next
@@ -2284,7 +2292,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(ev.Text)
 			return emitText(ev.Text)
 		})
-		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && shouldFailoverAccount(err) && (IsRateLimited(err) || IsAuthFailure(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && shouldFailoverAccount(err) && remainingBudget(ctx) >= minFailoverBudget && (IsRateLimited(err) || IsAuthFailure(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
 			originalErr := err
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
@@ -2298,9 +2306,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
-				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
+				failoverCtx := withAccountAttempt(ctx, 2)
+				res2, err2 := s.chatWithAccountEvents(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
 					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 						toolKnown := false
 						for _, tm := range toolMaps {
@@ -2453,15 +2460,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
-				next, nerr := s.nextHealthyAccount(acc.ID)
-				if nerr == nil {
-					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-					defer cancel2()
-					if res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
-						routeRes, routeErr = res2, nil
-						acc = next
-						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
-					} else {
+				if remainingBudget(ctx) < minFailoverBudget {
+					// Not enough budget left for another account attempt: skip failover.
+				} else {
+					next, nerr := s.nextHealthyAccount(acc.ID)
+					if nerr == nil {
+						failoverCtx := withAccountAttempt(ctx, 2)
+						if res2, err2 := s.chatWithAccount(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
+							routeRes, routeErr = res2, nil
+							acc = next
+							account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
+						}
 					}
 				}
 			}
@@ -2611,7 +2620,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return onReasoning(reasoning)
 		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDeltaWrapped, onReasoningWrapped)
-		if err != nil && streamedReasoningLen == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && streamedReasoningLen == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) && remainingBudget(ctx) >= minFailoverBudget {
 			originalErr := err
 			next, nerr := s.nextHealthyAccount(acc.ID)
 			if nerr == nil {
@@ -2620,9 +2629,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
-				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
+				failoverCtx := withAccountAttempt(ctx, 2)
+				if res2, err2 := s.chatWithAccountReasoning(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
@@ -2719,7 +2727,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				err = nil
 			}
 		}
-		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) && remainingBudget(ctx) >= minFailoverBudget {
 			originalErr := err
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
@@ -2730,15 +2738,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
-				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
+				failoverCtx := withAccountAttempt(ctx, 2)
+				res2, err2 := s.chatWithAccount(failoverCtx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
 					res = res2
 					acc = next
+					openaiAttempts = 2
+					setM365RequestHeaders(w, s.settings.get().ChatTimeoutSeconds, openaiAttempts, acc.ID)
 					err = nil
 				} else {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
@@ -2945,7 +2954,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if len(res.Images) > 0 {
 		parts := []any{map[string]any{"type": "text", "text": res.Text}}
 		for _, u := range res.Images {
-			du, _ := downloadImageAsDataURIWithToken(u, acc.AccessToken)
+			du, _ := downloadImageAsDataURIWithTokenLogged(r.Context(), u, acc.AccessToken)
 			parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": du}})
 		}
 		content = parts

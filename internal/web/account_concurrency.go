@@ -3,16 +3,73 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"m365-copilot2api/internal/applog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"m365-copilot2api/internal/chathub"
 )
 
 const defaultAccountConcurrency = 8
+
+// ErrAccountQueueTimeout reports that an account's concurrency slot did not
+// become available before the queue deadline. It maps to a 429 response with
+// X-M365-Failure-Stage: account_queue.
+var ErrAccountQueueTimeout = errors.New("account_queue_timeout: selected account is busy")
+
+const (
+	accountQueueTimeoutFallback = 5 * time.Second
+
+	maxAccountAttempts = 2
+	attemptOneBudget   = 35 * time.Second
+	attemptTwoBudget   = 25 * time.Second
+	minFailoverBudget  = 15 * time.Second
+)
+
+type accountAttemptKey struct{}
+
+// withAccountAttempt tags the current account attempt number so shared
+// chatWithAccount* helpers can cap each attempt with its own budget.
+func withAccountAttempt(ctx context.Context, attempt int) context.Context {
+	return context.WithValue(ctx, accountAttemptKey{}, attempt)
+}
+
+func accountAttemptFrom(ctx context.Context) int {
+	if v, ok := ctx.Value(accountAttemptKey{}).(int); ok && v >= 1 {
+		return v
+	}
+	return 1
+}
+
+// attemptContext derives a per-attempt budget: 35s for the first account,
+// 25s for the second (capped by the configured account attempt timeout when
+// smaller); the parent deadline (total request budget) still wins.
+func attemptContext(ctx context.Context, attempt int, configured time.Duration) (context.Context, context.CancelFunc) {
+	budget := attemptOneBudget
+	if attempt == 2 {
+		budget = attemptTwoBudget
+	}
+	if configured > 0 && configured < budget {
+		budget = configured
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// remainingBudget returns the time left on ctx. It is used to forbid
+// failover when there is not enough budget for another account attempt.
+func remainingBudget(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+		return 0
+	}
+	return time.Hour
+}
 
 type accountConcurrency struct {
 	mu       sync.Mutex
@@ -117,8 +174,35 @@ func (s *Server) accountClient(accountID string) *chathub.Client {
 	return s.chat
 }
 
-func (s *Server) chatWithAccount(ctx context.Context, accountID string, account chathub.Account, request chathub.Request) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+func (s *Server) acquireAccountSlot(ctx context.Context, accountID string) (func(), error) {
+	timeout := time.Duration(s.settings.get().AccountQueueTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = accountQueueTimeoutFallback
+	}
+	queueCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	release, err := s.accountConcurrency.Acquire(queueCtx, accountID)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrAccountQueueTimeout
+		}
+		return nil, err
+	}
+	return release, nil
+}
+
+// chatWithAccountAttempt runs one account attempt with a dedicated per-attempt
+// budget. attempt 1 gets 35s, attempt 2 gets 25s; the total request deadline
+// still wins. Queueing uses its own short timeout so Acquire cannot consume
+// the whole request budget.
+func (s *Server) chatWithAccountAttempt(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, attempt int) (chathub.Result, error) {
+	configured := time.Duration(s.settings.get().AccountAttemptTimeoutSeconds) * time.Second
+	if request.IdleTimeout <= 0 {
+		request.IdleTimeout = time.Duration(s.settings.get().ChatIdleTimeoutSeconds) * time.Second
+	}
+	attemptCtx, cancel := attemptContext(ctx, attempt, configured)
+	defer cancel()
+	release, err := s.acquireAccountSlot(attemptCtx, accountID)
 	if err != nil {
 		return chathub.Result{}, err
 	}
@@ -126,14 +210,24 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 	if s.accountPool != nil {
 		s.accountPool.MarkCall(accountID)
 	}
-	result, err := s.accountClient(accountID).Chat(ctx, account, request)
+	result, err := s.accountClient(accountID).Chat(attemptCtx, account, request)
 	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
 
+func (s *Server) chatWithAccount(ctx context.Context, accountID string, account chathub.Account, request chathub.Request) (chathub.Result, error) {
+	return s.chatWithAccountAttempt(ctx, accountID, account, request, accountAttemptFrom(ctx))
+}
+
 func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onEvent func(chathub.StreamEvent) error) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+	configured := time.Duration(s.settings.get().AccountAttemptTimeoutSeconds) * time.Second
+	if request.IdleTimeout <= 0 {
+		request.IdleTimeout = time.Duration(s.settings.get().ChatIdleTimeoutSeconds) * time.Second
+	}
+	attemptCtx, cancel := attemptContext(ctx, accountAttemptFrom(ctx), configured)
+	defer cancel()
+	release, err := s.acquireAccountSlot(attemptCtx, accountID)
 	if err != nil {
 		return chathub.Result{}, err
 	}
@@ -141,14 +235,20 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 	if s.accountPool != nil {
 		s.accountPool.MarkCall(accountID)
 	}
-	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
+	result, err := s.accountClient(accountID).ChatWithEvents(attemptCtx, account, request, onEvent)
 	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
 
 func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onDelta, onReasoning func(string) error) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+	configured := time.Duration(s.settings.get().AccountAttemptTimeoutSeconds) * time.Second
+	if request.IdleTimeout <= 0 {
+		request.IdleTimeout = time.Duration(s.settings.get().ChatIdleTimeoutSeconds) * time.Second
+	}
+	attemptCtx, cancel := attemptContext(ctx, accountAttemptFrom(ctx), configured)
+	defer cancel()
+	release, err := s.acquireAccountSlot(attemptCtx, accountID)
 	if err != nil {
 		return chathub.Result{}, err
 	}
@@ -156,7 +256,7 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 	if s.accountPool != nil {
 		s.accountPool.MarkCall(accountID)
 	}
-	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	result, err := s.accountClient(accountID).ChatWithReasoning(attemptCtx, account, request, onDelta, onReasoning)
 	s.logChatHubUsage(request, result, err)
 	s.recordAccountChatResult(accountID, result, err)
 	return result, err

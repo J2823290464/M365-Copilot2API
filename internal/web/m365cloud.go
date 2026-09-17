@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"m365-copilot2api/internal/outbound"
 )
 
 type M365CloudClient struct {
@@ -24,11 +27,12 @@ type M365CloudClient struct {
 }
 
 func NewM365CloudClient(clientID, tenantID, refreshToken string) *M365CloudClient {
+	base := outbound.HTTPClient()
 	return &M365CloudClient{
 		clientID:     clientID,
 		tenantID:     tenantID,
 		refreshToken: refreshToken,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   &http.Client{Transport: base.Transport, Timeout: 30 * time.Second},
 	}
 }
 
@@ -102,7 +106,7 @@ func (c *M365CloudClient) getAccessToken() (string, error) {
 	return c.accessToken, nil
 }
 
-func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[string]any, error) {
+func (c *M365CloudClient) doAPIContext(ctx context.Context, action string, payload map[string]any) (map[string]any, error) {
 	token, err := c.getAccessToken()
 	if err != nil {
 		return nil, err
@@ -123,7 +127,7 @@ func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[stri
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://m365.cloud.microsoft/chat", io.NopCloser(stringReader(string(jsonBody))))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://m365.cloud.microsoft/chat", io.NopCloser(stringReader(string(jsonBody))))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -173,9 +177,9 @@ func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[stri
 	return result, nil
 }
 
-func (c *M365CloudClient) DeleteConversation(conversationID string) error {
+func (c *M365CloudClient) DeleteConversationContext(ctx context.Context, conversationID string) error {
 	log.Printf("[m365-cloud] deleting conversation %s", conversationID)
-	_, err := c.doAPI("DeleteConversation", map[string]any{
+	_, err := c.doAPIContext(ctx, "DeleteConversation", map[string]any{
 		"conversationId": conversationID,
 		"state": map[string]any{
 			"conversationPageHistoryList": map[string]any{
@@ -186,8 +190,8 @@ func (c *M365CloudClient) DeleteConversation(conversationID string) error {
 	return err
 }
 
-func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
-	result, err := c.doAPI("RefreshNavPane", map[string]any{})
+func (c *M365CloudClient) ListConversationsContext(ctx context.Context) ([]map[string]any, error) {
+	result, err := c.doAPIContext(ctx, "RefreshNavPane", map[string]any{})
 	if err != nil {
 		return nil, err
 	}
@@ -236,14 +240,14 @@ func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 	return chats, nil
 }
 
-func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN int) (int, error) {
+func (c *M365CloudClient) CleanupOldConversationsContext(ctx context.Context, maxAge time.Duration, keepN int) (int, error) {
 	// 微软历史列表是"滑动式"的：RefreshNavPane 一次只返回一屏对话，
 	// 删除后进行到的对话会顶上来成为新一批。因此循环拉取删除，直到列表清空。
 	now := time.Now().UnixMilli()
 	deleted := 0
 	kept := 0
 	for round := 0; round < 100; round++ {
-		chats, err := c.ListConversations()
+		chats, err := c.ListConversationsContext(ctx)
 		if err != nil {
 			return deleted, err
 		}
@@ -263,7 +267,7 @@ func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN in
 
 			age := time.Duration(now-int64(createTime)) * time.Millisecond
 			if age > maxAge {
-				if err := c.DeleteConversation(convID); err != nil {
+				if err := c.DeleteConversationContext(ctx, convID); err != nil {
 					log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
 					continue
 				}
@@ -271,7 +275,7 @@ func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN in
 				anyDeleted = true
 			} else {
 				if kept >= keepN {
-					if err := c.DeleteConversation(convID); err != nil {
+					if err := c.DeleteConversationContext(ctx, convID); err != nil {
 						log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
 						continue
 					}

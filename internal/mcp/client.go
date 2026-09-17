@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"m365-copilot2api/internal/applog"
+	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,7 +35,7 @@ type Client struct {
 func NewClient(serverURL string) *Client {
 	return &Client{
 		serverURL:  serverURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: func() *http.Client { c := outbound.HTTPClient(); c.Timeout = 30 * time.Second; return c }(),
 		pending:    map[int64]chan json.RawMessage{},
 		done:       make(chan struct{}),
 	}

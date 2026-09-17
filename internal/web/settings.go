@@ -42,43 +42,47 @@ var configurableCodexModels = []string{
 }
 
 type runtimeSettings struct {
-	MaxToolCallsPerTurn        int            `json:"maxToolCallsPerTurn"`
-	MaxToolRounds              int            `json:"maxToolRounds"`
-	ContextWindow              int            `json:"contextWindow"`
-	AgentContextWindow         int            `json:"agentContextWindow"`
-	AutoContextCompression     bool           `json:"autoContextCompression"`
-	MaxOutputTokens            int            `json:"maxOutputTokens"`
-	ChatTimeoutSeconds         int            `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds        int            `json:"imageTimeoutSeconds"`
-	LogLevel                   string         `json:"logLevel"`
-	DebugLogPath               string         `json:"debugLogPath"`
-	ListenAddress              string         `json:"listenAddress"`
-	ConfigPath                 string         `json:"configPath"`
-	TokenCachePath             string         `json:"tokenCachePath"`
-	SessionCachePath           string         `json:"sessionCachePath"`
-	OutboundProxy              string         `json:"outboundProxy"`
-	ProxyPool                  []string       `json:"proxyPool,omitempty"`
-	ClientID                   string         `json:"clientId"`
-	Authority                  string         `json:"authority"`
-	RedirectURI                string         `json:"redirectUri"`
-	Scope                      string         `json:"scope"`
-	ModelMappings              []modelMapping `json:"modelMappings"`
-	ToolPlanningMode           string         `json:"toolPlanningMode"`
-	AutoClientToolUse          bool           `json:"autoClientToolUse"`
-	ClientToolPermission       string         `json:"clientToolPermission"`
-	RateLimitCooldownSeconds   int            `json:"rateLimitCooldownSeconds"`
-	Scenario                   string         `json:"scenario"`
-	MaxConversationMessages    int            `json:"maxConversationMessages"`
-	LicenseType                string         `json:"licenseType"`
-	AccountConcurrencyLimit    int            `json:"accountConcurrencyLimit"`
-	EnableMemoryV2             bool           `json:"enableMemoryV2"`
-	EnableDeepWork             bool           `json:"enableDeepWork"`
-	EnableComputerUse          bool           `json:"enableComputerUse"`
-	EnableRealtimeVoice        bool           `json:"enableRealtimeVoice"`
-	EnableSystemPromptOverride bool           `json:"enableSystemPromptOverride"`
-	EnableDesignerImageGen4o   bool           `json:"enableDesignerImageGen4o"`
-	EnableCodeCanvas           bool           `json:"enableCodeCanvas"`
-	EnableSydneyReconnect      bool           `json:"enableSydneyReconnect"`
+	MaxToolCallsPerTurn          int            `json:"maxToolCallsPerTurn"`
+	MaxToolRounds                int            `json:"maxToolRounds"`
+	ContextWindow                int            `json:"contextWindow"`
+	AgentContextWindow           int            `json:"agentContextWindow"`
+	AutoContextCompression       bool           `json:"autoContextCompression"`
+	MaxOutputTokens              int            `json:"maxOutputTokens"`
+	ChatTimeoutSeconds           int            `json:"chatTimeoutSeconds"`
+	ImageTimeoutSeconds          int            `json:"imageTimeoutSeconds"`
+	AccountQueueTimeoutSeconds   int            `json:"accountQueueTimeoutSeconds"`
+	AccountAttemptTimeoutSeconds int            `json:"accountAttemptTimeoutSeconds"`
+	ChatIdleTimeoutSeconds       int            `json:"chatIdleTimeoutSeconds"`
+	ToolTimeoutSeconds           int            `json:"toolTimeoutSeconds"`
+	LogLevel                     string         `json:"logLevel"`
+	DebugLogPath                 string         `json:"debugLogPath"`
+	ListenAddress                string         `json:"listenAddress"`
+	ConfigPath                   string         `json:"configPath"`
+	TokenCachePath               string         `json:"tokenCachePath"`
+	SessionCachePath             string         `json:"sessionCachePath"`
+	OutboundProxy                string         `json:"outboundProxy"`
+	ProxyPool                    []string       `json:"proxyPool,omitempty"`
+	ClientID                     string         `json:"clientId"`
+	Authority                    string         `json:"authority"`
+	RedirectURI                  string         `json:"redirectUri"`
+	Scope                        string         `json:"scope"`
+	ModelMappings                []modelMapping `json:"modelMappings"`
+	ToolPlanningMode             string         `json:"toolPlanningMode"`
+	AutoClientToolUse            bool           `json:"autoClientToolUse"`
+	ClientToolPermission         string         `json:"clientToolPermission"`
+	RateLimitCooldownSeconds     int            `json:"rateLimitCooldownSeconds"`
+	Scenario                     string         `json:"scenario"`
+	MaxConversationMessages      int            `json:"maxConversationMessages"`
+	LicenseType                  string         `json:"licenseType"`
+	AccountConcurrencyLimit      int            `json:"accountConcurrencyLimit"`
+	EnableMemoryV2               bool           `json:"enableMemoryV2"`
+	EnableDeepWork               bool           `json:"enableDeepWork"`
+	EnableComputerUse            bool           `json:"enableComputerUse"`
+	EnableRealtimeVoice          bool           `json:"enableRealtimeVoice"`
+	EnableSystemPromptOverride   bool           `json:"enableSystemPromptOverride"`
+	EnableDesignerImageGen4o     bool           `json:"enableDesignerImageGen4o"`
+	EnableCodeCanvas             bool           `json:"enableCodeCanvas"`
+	EnableSydneyReconnect        bool           `json:"enableSydneyReconnect"`
 }
 
 type settingsStore struct {
@@ -113,8 +117,14 @@ func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
 		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), AgentContextWindow: envInt("M365_AGENT_CONTEXT_WINDOW", 32768), AutoContextCompression: envBool("M365_AUTO_CONTEXT_COMPRESSION", true), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
-		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
-		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
+		ChatTimeoutSeconds:           envInt("M365_CHAT_TIMEOUT_SECONDS", 120),
+		ImageTimeoutSeconds:          envInt("M365_IMAGE_TIMEOUT_SECONDS", 150),
+		AccountQueueTimeoutSeconds:   envInt("M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS", 5),
+		AccountAttemptTimeoutSeconds: envInt("M365_ACCOUNT_ATTEMPT_TIMEOUT_SECONDS", 45),
+		ChatIdleTimeoutSeconds:       envInt("M365_CHAT_IDLE_TIMEOUT_SECONDS", 45),
+		ToolTimeoutSeconds:           envInt("M365_TOOL_TIMEOUT_SECONDS", 30),
+		LogLevel:                     firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
+		DebugLogPath:                 os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
 		ModelMappings:              append([]modelMapping(nil), defaultModelMappings...),
@@ -185,6 +195,18 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.ImageTimeoutSeconds < 5 || v.ImageTimeoutSeconds > 3600 {
 		return fmt.Errorf("图片超时必须为 5-3600 秒")
+	}
+	if v.AccountQueueTimeoutSeconds < 1 || v.AccountQueueTimeoutSeconds > 60 {
+		return fmt.Errorf("账号排队超时必须为 1-60 秒")
+	}
+	if v.AccountAttemptTimeoutSeconds < 5 || v.AccountAttemptTimeoutSeconds > 120 {
+		return fmt.Errorf("单账号尝试超时必须为 5-120 秒")
+	}
+	if v.ChatIdleTimeoutSeconds < 5 || v.ChatIdleTimeoutSeconds > 90 {
+		return fmt.Errorf("聊天业务空闲超时必须为 5-90 秒")
+	}
+	if v.ToolTimeoutSeconds < 5 || v.ToolTimeoutSeconds > 90 {
+		return fmt.Errorf("工具超时必须为 5-90 秒")
 	}
 	if v.LogLevel != "silent" && v.LogLevel != "error" && v.LogLevel != "warn" && v.LogLevel != "info" && v.LogLevel != "debug" {
 		return fmt.Errorf("日志等级必须为 silent、error、warn、info 或 debug")

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -64,10 +65,10 @@ func upstreamStatus(err error) int {
 
 func applyM365Headers(w http.ResponseWriter, err error, accountID string) {
 	cat := ClassifyError(err)
-	if accountID != "" {
-		w.Header().Set("X-M365-Account-Id", accountID)
+	if masked := maskAccountID(accountID); masked != "" {
+		w.Header().Set(m365AccountIDHeader, masked)
 	} else {
-		w.Header().Set("X-M365-Account-Id", "")
+		w.Header().Del(m365AccountIDHeader)
 	}
 	w.Header().Set("X-M365-Proxy-Error", string(cat))
 	if GlobalCircuitIsOpen() {
@@ -106,7 +107,19 @@ func applyM365Headers(w http.ResponseWriter, err error, accountID string) {
 	}
 }
 
+func writeAccountQueueTimeout(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-M365-Failure-Stage", "account_queue")
+	w.Header().Set("Retry-After", "3")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "server_busy", "code": "account_queue_timeout", "message": "Selected account is busy; retry after a short delay."}})
+}
+
 func writeUpstreamErrorWithAccount(w http.ResponseWriter, err error, accountID string) {
+	if errors.Is(err, ErrAccountQueueTimeout) {
+		writeAccountQueueTimeout(w)
+		return
+	}
 	applyM365Headers(w, err, accountID)
 	if retry := RetryAfterSeconds(err); retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
@@ -174,6 +187,10 @@ func ClassifyErrorCode(code string) ErrorCategory {
 // writeUpstreamError renders a failed upstream call as an HTTP response,
 // surfacing the Retry-After hint for rate limits so clients can back off.
 func writeUpstreamError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAccountQueueTimeout) {
+		writeAccountQueueTimeout(w)
+		return
+	}
 	applyM365Headers(w, err, "")
 	if retry := RetryAfterSeconds(err); retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))

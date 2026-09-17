@@ -35,6 +35,15 @@ var ErrOffensiveContent = errors.New("upstream content policy flagged as offensi
 
 var ErrMeteringThrottled = errors.New("upstream metering throttle: capability access denied")
 
+var ErrUpstreamBusinessIdle = errors.New("upstream business idle: no progress for too long")
+
+func isDeadlineErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") || strings.Contains(strings.ToLower(err.Error()), "i/o timeout")
+}
+
 func checkMeteringError(mi any) error {
 	arr, ok := mi.([]any)
 	if !ok {
@@ -203,7 +212,23 @@ func minInt(a, b int) int {
 const (
 	rs          = "\x1e"
 	defaultTone = "Magic"
-	wsBase      = "wss://substrate.office.com/m365Copilot/Chathub"
+)
+
+// wsBase is a variable so tests can redirect upstream WebSocket dials to a
+// local server; production always uses the real ChatHub endpoint.
+var wsBase = "wss://substrate.office.com/m365Copilot/Chathub"
+
+// SetWSBaseForTest redirects the upstream WebSocket endpoint for tests and
+// returns the previous value.
+func SetWSBaseForTest(ws string) string {
+	old := wsBase
+	if ws != "" {
+		wsBase = ws
+	}
+	return old
+}
+
+const (
 	// maxAttachments bounds per-request remote downloads: each image is
 	// base64-encoded and held in memory alongside the multipart body.
 	maxAttachments   = 10
@@ -228,6 +253,7 @@ type Request struct {
 	Tools                 []Tool
 	ToolChoice            any
 	MCPServerURL          string
+	IdleTimeout           time.Duration
 	Started               bool
 	ConversationSignature string
 	PreviousMessages      []ContextMessage
@@ -393,7 +419,15 @@ func (c *Client) ChatWithReasoning(ctx context.Context, acc Account, req Request
 
 func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler) (Result, error) {
 	startedAt := time.Now()
-	applog.Debug("chathub", "request_started", "prompt_len", len(req.Text))
+	trace := TraceFromContext(ctx)
+	if trace == nil {
+		trace = &RequestTrace{}
+		ctx = WithTrace(ctx, trace)
+	}
+	if trace.RequestID == "" {
+		trace.RequestID = uuid.NewString()
+	}
+	applog.Debug("chathub", "request_started", "prompt_len", len(req.Text), "request_id", trace.RequestID)
 	if acc.AccessToken == "" || acc.OID == "" || acc.TID == "" {
 		return Result{}, fmt.Errorf("missing access token / oid / tid")
 	}
@@ -412,7 +446,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		req.ConversationID = uuid.NewString()
 		firstTurn = true
 	}
-	requestID := uuid.NewString()
+	requestID := trace.RequestID
 	wsURL, err := BuildWSURLWithOptions(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario, req.DisableMemory)
 	if err != nil {
 		return Result{}, err
@@ -552,6 +586,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		c.Trace(meta)
 	}
 	applog.Debug("chathub", "handshake_completed", "duration_ms", time.Since(dialStarted).Milliseconds())
+	trace.MarkWebsocketConnected()
 	payloadSentAt := time.Now()
 	ts := Timestamps{RequestSent: payloadSentAt.UTC().Format(time.RFC3339Nano)}
 	if err := wsWrite(websocket.TextMessage, []byte(payload)); err != nil {
@@ -563,6 +598,16 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	phase = PhasePayloadSent
 
+	lastBusiness := time.Now()
+	// Business progress only advances on real content, tool activity,
+	// reasoning, or explicit state changes. SignalR pings and metadata-only
+	// frames (references, suggested responses) must not postpone the
+	// business idle deadline.
+	markBusiness := func() {
+		lastBusiness = time.Now()
+		trace.MarkBusiness()
+	}
+
 	var deltas []string
 	var streamed strings.Builder
 	emitDelta := func(d string) error {
@@ -572,6 +617,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		markBusiness()
 		if chTrace {
 			applog.Debug("chathub", "delta_emitted", "len", len(d), "streamed_len", streamed.Len()+len(d), "preview", truncate(d, 80))
 		}
@@ -681,7 +727,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	references := make(map[string]Reference)
 	var firstServiceResponse bool
 
-	deadline := time.Now().Add(5 * time.Minute)
+	// Read deadline is refreshed before every read so one stalled upstream
+	// socket cannot hold the request past its total budget. Business-level
+	// idle (no answer/progress frames, only pings) is also tracked so a
+	// keep-alive-only connection cannot keep the stream open forever.
+	readIdleTimeout := req.IdleTimeout
+	if readIdleTimeout <= 0 {
+		readIdleTimeout = 45 * time.Second
+	}
+	businessIdleTimeout := readIdleTimeout
 	type wsRead struct {
 		msg []byte
 		err error
@@ -692,6 +746,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	go func() {
 		defer close(readCh)
 		for {
+			if err := ctx.Err(); err != nil {
+				return
+			}
 			if reused {
 				var msg []byte
 				var err error
@@ -720,12 +777,17 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				case <-ctx.Done():
 					return
 				}
+				trace.MarkTransport()
 				if err != nil {
 					return
 				}
 				continue
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+			idleDeadline := time.Now().Add(readIdleTimeout)
+			if deadline, ok := ctx.Deadline(); ok && deadline.Before(idleDeadline) {
+				idleDeadline = deadline
+			}
+			_ = conn.SetReadDeadline(idleDeadline)
 			_, msg, err := conn.ReadMessage()
 			select {
 			case readCh <- wsRead{msg: msg, err: err}:
@@ -734,12 +796,31 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			case <-ctx.Done():
 				return
 			}
+			trace.MarkTransport()
 			if err != nil {
 				return
 			}
 		}
 	}()
-	for time.Now().Before(deadline) {
+	// Unblock ReadMessage as soon as the request is canceled so the account
+	// slot is released quickly and pooled sockets never linger.
+	closeDone := make(chan struct{})
+	defer close(closeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "request canceled"),
+				time.Now().Add(time.Second),
+			)
+			_ = conn.Close()
+		case <-closeDone:
+		}
+	}()
+	businessTicker := time.NewTicker(time.Second)
+	defer businessTicker.Stop()
+	for {
 		var read wsRead
 		select {
 		case <-ctx.Done():
@@ -749,6 +830,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: ctx.Err()}
 			}
 			return Result{}, &DialError{Status: 0, Kind: "WS_READ_TIMEOUT", cause: ctx.Err()}
+		case <-businessTicker.C:
+			if time.Since(lastBusiness) > businessIdleTimeout {
+				returnConn = false
+				_ = conn.Close()
+				return Result{}, fmt.Errorf("%w", ErrUpstreamBusinessIdle)
+			}
 		case r, ok := <-readCh:
 			if !ok {
 				if ctx.Err() != nil {
@@ -782,6 +869,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if !firstServiceResponse {
 			firstServiceResponse = true
 			ts.FirstServiceResponseReceived = time.Now().UTC().Format(time.RFC3339Nano)
+			trace.MarkFirstServiceResponse()
 		}
 		for _, part := range strings.Split(string(read.msg), rs) {
 			part = strings.TrimSpace(part)
@@ -817,6 +905,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if onEvent != nil {
 						beforeTools := len(seenStreamTools)
 						for _, ev := range extractToolEvents(arg, seenStreamTools) {
+							markBusiness()
 							if err := onEvent(ev); err != nil {
 								returnConn = false
 								return Result{}, err
@@ -830,6 +919,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					for _, ev := range classifyUpdateMessages(msgs) {
 						if ev.Kind == "reasoning" {
 							reasoningBuf.WriteString(ev.Text)
+							markBusiness()
 						}
 						ev.Raw = eventRaw(arg)
 						if ev.Kind != "text" && onEvent != nil {
@@ -1004,6 +1094,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			}
 
 			if int(t) == 2 {
+				markBusiness()
 				item, _ := obj["item"].(map[string]any)
 				if item != nil {
 					if smid, ok := item["storageMessageId"].(string); ok && smid != "" {
@@ -1067,6 +1158,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			}
 
 			if int(t) == 3 {
+				markBusiness()
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					returnConn = false
 					errCode, _ := errObj["code"].(string)
@@ -1147,12 +1239,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			}
 		}
 	}
-
-	// Reaching the overall deadline without a SignalR completion frame is
-	// an incomplete upstream response. Do not return accumulated deltas as if
-	// they were a successful, finished answer.
-	returnConn = false
-	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
 // finalizeText reconciles the incrementally streamed text with the

@@ -75,9 +75,11 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(firstNonEmpty(b.AccountID, b.User))
 	if err != nil {
+		setM365RequestHeaders(w, s.settings.get().ImageTimeoutSeconds, 1, "")
 		writeUpstreamError(w, err)
 		return
 	}
+	setM365RequestHeaders(w, s.settings.get().ImageTimeoutSeconds, 1, acc.ID)
 	if acc.OID == "" || acc.TID == "" {
 		acc.OID, acc.TID = extractOIDTID(acc.AccessToken)
 	}
@@ -489,8 +491,12 @@ func downloadImageAsBase64(url string) (b64, contentType string, err error) {
 }
 
 func downloadImageAsBase64WithToken(url, token string) (b64, contentType string, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	return downloadImageAsBase64Context(context.Background(), url, token)
+}
+
+func downloadImageAsBase64Context(ctx context.Context, url, token string) (b64, contentType string, err error) {
+	client := outbound.HTTPClient()
+	client.Timeout = 30 * time.Second
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", "", err
@@ -498,7 +504,7 @@ func downloadImageAsBase64WithToken(url, token string) (b64, contentType string,
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -519,7 +525,11 @@ func downloadImageAsBase64WithToken(url, token string) (b64, contentType string,
 }
 
 func downloadImageAsDataURI(url string) (string, error) {
-	b64, ct, err := downloadImageAsBase64(url)
+	return downloadImageAsDataURIContext(context.Background(), url, "")
+}
+
+func downloadImageAsDataURIContext(ctx context.Context, url, token string) (string, error) {
+	b64, ct, err := downloadImageAsBase64Context(ctx, url, token)
 	if err != nil {
 		return url, nil
 	}
@@ -527,7 +537,11 @@ func downloadImageAsDataURI(url string) (string, error) {
 }
 
 func downloadImageAsDataURIWithToken(url, token string) (string, error) {
-	b64, ct, err := downloadImageAsBase64WithToken(url, token)
+	return downloadImageAsDataURIContext(context.Background(), url, token)
+}
+
+func downloadImageAsDataURIWithTokenLogged(ctx context.Context, url, token string) (string, error) {
+	b64, ct, err := downloadImageAsBase64Context(ctx, url, token)
 	if err != nil {
 		urlPreview := url
 		if len(urlPreview) > 80 {

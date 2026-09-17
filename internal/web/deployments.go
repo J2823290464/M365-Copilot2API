@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
 	"os"
@@ -46,7 +47,7 @@ var openDeployments = sync.OnceValue(func() *deploymentStore {
 })
 var cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
 var workerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-var deploymentHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var deploymentHTTPClient = func() *http.Client { c := outbound.HTTPClient(); c.Timeout = 30 * time.Second; return c }()
 
 func (s *deploymentStore) save() error {
 	s.mu.Lock()

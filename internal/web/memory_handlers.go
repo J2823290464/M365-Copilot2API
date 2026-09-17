@@ -55,8 +55,8 @@ func substrateHeaders(acc auth.AccountToken) http.Header {
 	return h
 }
 
-func proxySubstrate(w http.ResponseWriter, targetURL string, method string, acc auth.AccountToken, body io.Reader) {
-	req, err := http.NewRequest(method, targetURL, body)
+func proxySubstrate(w http.ResponseWriter, r *http.Request, targetURL string, method string, acc auth.AccountToken, body io.Reader) {
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, body)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "failed to create substrate request")
 		return
@@ -95,7 +95,7 @@ func (s *Server) memoryGetFlags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := substrateBase + "/m365Copilot/PersonalizationUserFlags?variants=feature.EnablePersonalization"
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "failed to create substrate request")
 		return
@@ -135,7 +135,7 @@ func (s *Server) memoryPatchFlags(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	target := substrateBase + "/m365Copilot/PersonalizationUserFlags?variants=feature.EnablePersonalization"
-	proxySubstrate(w, target, http.MethodPost, acc, r.Body)
+	proxySubstrate(w, r, target, http.MethodPost, acc, r.Body)
 	flagsCache.Lock()
 	delete(flagsCache.m, acc.ID)
 	flagsCache.Unlock()
@@ -148,7 +148,7 @@ func (s *Server) memoryGetInstructions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := substrateBase + "/m365Copilot/CustomInstructions?variants=feature.EnablePersonalization"
-	proxySubstrate(w, target, http.MethodGet, acc, nil)
+	proxySubstrate(w, r, target, http.MethodGet, acc, nil)
 }
 
 func (s *Server) memoryPutInstructions(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +163,7 @@ func (s *Server) memoryPutInstructions(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	target := substrateBase + "/m365Copilot/CustomInstructions?variants=feature.EnablePersonalization"
-	proxySubstrate(w, target, http.MethodPost, acc, r.Body)
+	proxySubstrate(w, r, target, http.MethodPost, acc, r.Body)
 }
 
 func (s *Server) memoryDeleteInstruction(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +183,7 @@ func (s *Server) memoryDeleteInstruction(w http.ResponseWriter, r *http.Request)
 	}
 	encodedID := url.PathEscape(id)
 	target := substrateBase + "/m365Copilot/CustomInstructions/" + encodedID + "?variants=feature.EnablePersonalization"
-	proxySubstrate(w, target, http.MethodDelete, acc, nil)
+	proxySubstrate(w, r, target, http.MethodDelete, acc, nil)
 }
 
 func (s *Server) memoryPatchSettings(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +198,7 @@ func (s *Server) memoryPatchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	target := substrateBase + "/puds/v1/me/settings/copilot"
-	proxySubstrate(w, target, http.MethodPatch, acc, r.Body)
+	proxySubstrate(w, r, target, http.MethodPatch, acc, r.Body)
 }
 
 func (s *Server) handleMemoryFlags(w http.ResponseWriter, r *http.Request) {
