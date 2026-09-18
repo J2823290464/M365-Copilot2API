@@ -69,6 +69,7 @@ type runtimeSettings struct {
 	ModelMappings                []modelMapping `json:"modelMappings"`
 	ToolPlanningMode             string         `json:"toolPlanningMode"`
 	AutoClientToolUse            bool           `json:"autoClientToolUse"`
+	PassThroughClientTools       bool           `json:"passThroughClientTools"`
 	ClientToolPermission         string         `json:"clientToolPermission"`
 	RateLimitCooldownSeconds     int            `json:"rateLimitCooldownSeconds"`
 	Scenario                     string         `json:"scenario"`
@@ -127,9 +128,9 @@ func defaultRuntimeSettings() runtimeSettings {
 		DebugLogPath:                 os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
-		ModelMappings:              append([]modelMapping(nil), defaultModelMappings...),
-		ToolPlanningMode:           toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
-		AutoClientToolUse:          os.Getenv("M365_AUTO_CLIENT_TOOL_USE") != "false",
+		ModelMappings:     append([]modelMapping(nil), defaultModelMappings...),
+		ToolPlanningMode:  toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		AutoClientToolUse: os.Getenv("M365_AUTO_CLIENT_TOOL_USE") != "false", PassThroughClientTools: envBool("M365_PASS_THROUGH_CLIENT_TOOLS", false),
 		ClientToolPermission:       firstNonEmptySetting(os.Getenv("M365_CLIENT_TOOL_PERMISSION"), "default"),
 		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
 		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),

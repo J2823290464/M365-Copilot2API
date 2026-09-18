@@ -59,6 +59,103 @@ func trimRouterContext(prompt string) string {
 	tail := maxRouterContextChars - head
 	return prompt[:head] + "\n...[older history omitted]...\n" + prompt[len(prompt)-tail:]
 }
+
+// buildRequiredRetryText composes the constrained retry prompt used when the
+// router returned no tool call but tool_choice=required. The payload is kept
+// small on purpose: the full flattened prompt plus every raw tool schema
+// pushed this call past ~24k tokens and upstream intermittently rejected it
+// with InvalidRequest. Trimmed context + structural tool summaries (full
+// parameter skeleton, truncated descriptions) keep the strong "must pick a
+// tool" instruction while staying far below the budget.
+func buildRequiredRetryText(prompt string, tools []map[string]any) string {
+	return `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
+APPLICATION_REQUEST_AND_EVIDENCE:
+` + trimRouterContext(prompt) + "\nFUNCTION_DEFINITIONS:\n" + structuralToolDefs(tools)
+}
+
+// structuralToolDefs renders each tool with its full parameter skeleton
+// (types, enums, required flags, nested properties) while capping only the
+// free-text description length. Unlike compactToolDefs, this keeps the
+// parameter structure the model needs to build valid arguments; the payload
+// stays well below the upstream budget because descriptions are truncated
+// and empty containers are omitted.
+func structuralToolDefs(tools []map[string]any) string {
+	var b strings.Builder
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]any)
+		if fn == nil {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if name == "" {
+			continue
+		}
+		desc, _ := fn["description"].(string)
+		if len(desc) > 240 {
+			desc = desc[:240] + "..."
+		}
+		params, _ := fn["parameters"].(map[string]any)
+		fmt.Fprintf(&b, "- %s: %s\n", name, desc)
+		if params != nil {
+			paramLines := schemaSummaryLines(params, "  ", 0)
+			for _, line := range paramLines {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// schemaSummaryLines renders a JSON schema compactly: each property on its
+// own line with type, enum values, and required markers, recursing into
+// nested objects. Free-form descriptions are dropped to keep the payload
+// small; the full schema is still enforced by validateDetectedToolCalls.
+func schemaSummaryLines(schema map[string]any, indent string, depth int) []string {
+	if depth > 4 {
+		return nil
+	}
+	var lines []string
+	required := map[string]bool{}
+	if req, ok := schema["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				required[s] = true
+			}
+		}
+	}
+	props, _ := schema["properties"].(map[string]any)
+	for key, raw := range props {
+		prop, _ := raw.(map[string]any)
+		if prop == nil {
+			continue
+		}
+		typ, _ := prop["type"].(string)
+		marker := ""
+		if required[key] {
+			marker = "*"
+		}
+		line := fmt.Sprintf("%s%s%s: %s", indent, key, marker, typ)
+		if enums, ok := prop["enum"].([]any); ok && len(enums) > 0 {
+			vals := make([]string, 0, len(enums))
+			for _, e := range enums {
+				vals = append(vals, fmt.Sprint(e))
+			}
+			line += " [" + strings.Join(vals, "|") + "]"
+		}
+		if items, ok := prop["items"].(map[string]any); ok {
+			if itemType, _ := items["type"].(string); itemType != "" {
+				line += "[]" + itemType
+			}
+		}
+		lines = append(lines, line)
+		if nested, ok := prop["properties"].(map[string]any); ok && len(nested) > 0 {
+			lines = append(lines, schemaSummaryLines(prop, indent+"  ", depth+1)...)
+		}
+	}
+	return lines
+}
+
 func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) string {
 	defs := compactToolDefs(tools)
 	mode := normalizedToolChoiceMode(choice)

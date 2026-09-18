@@ -2047,7 +2047,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	toolCfg := s.settings.get()
 	registryTools := mcp.GlobalToolRegistry.ListTools()
 	if toolCfg.AutoClientToolUse {
-		body.Tools = autoSelectClientTools(answerPrompt, body.Tools, nil)
+		before := len(body.Tools)
+		body.Tools = routeClientTools(toolCfg.PassThroughClientTools, answerPrompt, body.Tools)
+		if toolCfg.PassThroughClientTools {
+			log.Printf("[tool-config] id=%s stage=pass_through declared=%d", requestID, len(body.Tools))
+		} else if added := len(body.Tools) - before; added > 0 {
+			log.Printf("[tool-config] id=%s stage=fallback_inject declared=%d fallback=%d",
+				requestID, before, added)
+		}
 	}
 	body.Tools = effectiveClientTools(
 		toolCfg.ClientToolPermission,
@@ -2510,10 +2517,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
-			defs, _ := json.Marshal(toolMaps)
-			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
-APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+			retryText := buildRequiredRetryText(prompt+"\n"+ledger.RouterContext(), toolMaps)
+			log.Printf("[tool-config] id=%s stage=required_retry prompt_len=%d", requestID, len(retryText))
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
@@ -2532,8 +2537,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					return
 				}
 			}
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
-			return
+			// Graceful degradation: the required retry could not produce a
+			// usable tool call. Fall through to the normal answer path so the
+			// client receives a real text response instead of a hard 502; the
+			// router evidence already flows into the ledger.
+			if retryErr != nil {
+				log.Printf("[tool-config] id=%s stage=required_retry_fallback err=%v", requestID, retryErr)
+			} else {
+				log.Printf("[tool-config] id=%s stage=required_retry_fallback parsed=%t calls=%d", requestID, parsed, len(calls))
+			}
 		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)

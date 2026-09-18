@@ -151,3 +151,38 @@ func toolFunctionName(tool map[string]any) string {
 	name, _ := fn["name"].(string)
 	return name
 }
+
+func TestBuildRequiredRetryTextCompactsPayload(t *testing.T) {
+	longPrompt := strings.Repeat("history line\n", 4000)
+	text := buildRequiredRetryText(longPrompt, testTools())
+	// Context is trimmed but tool definitions keep their parameter structure:
+	// names, types, required markers and enum values must survive so the model
+	// can construct valid arguments, while the free-form description gets
+	// truncated to keep the payload small.
+	if len(text) > maxRouterContextChars+3000 {
+		t.Fatalf("retry text too large: %d", len(text))
+	}
+	for _, phrase := range []string{"Select at least one required next tool call", `{"calls":[{"name":"function_name","arguments":{}}]}`, "FUNCTION_DEFINITIONS:", "get_weather", "city", "string"} {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("missing %q in retry text", phrase)
+		}
+	}
+	if strings.Contains(text, "history line") && !strings.Contains(text, "older history omitted") {
+		t.Fatal("expected long context to be trimmed")
+	}
+}
+
+func TestStructuralToolDefsKeepsParameterStructure(t *testing.T) {
+	tools := testTools()
+	defs := structuralToolDefs(tools)
+	// get_weather requires city; the summary must keep the param name, its
+	// type and a required marker so the model can build valid arguments.
+	if !strings.Contains(defs, "get_weather") || !strings.Contains(defs, "city*: string") {
+		t.Fatalf("missing parameter structure: %s", defs)
+	}
+	// get_time has no required params and no description: it must still be
+	// listed with its parameter skeleton.
+	if !strings.Contains(defs, "get_time") || !strings.Contains(defs, "city: string") {
+		t.Fatalf("missing optional parameter structure: %s", defs)
+	}
+}
