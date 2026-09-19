@@ -329,9 +329,13 @@ type Timestamps struct {
 }
 
 type Result struct {
-	Text                      string
-	Reasoning                 string
-	ConversationID            string
+	Text           string
+	Reasoning      string
+	ConversationID string
+	// SuppressedTurn marks an upstream audit marker (<block>no</block>) that the
+	// gateway refused to treat as an answer. Text stays whatever the upstream
+	// sent so callers can pattern match on it.
+	SuppressedTurn            bool
 	SessionID                 string
 	RequestID                 string
 	Throttling                any
@@ -1238,6 +1242,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				result := Result{
 					Text:                      text,
+					SuppressedTurn:            IsUpstreamBlockedSignal(text),
 					Reasoning:                 reasoningBuf.String(),
 					ConversationID:            req.ConversationID,
 					SessionID:                 req.SessionID,

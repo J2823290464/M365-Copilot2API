@@ -198,6 +198,16 @@ func isUpstreamBlockedSignal(text string) bool {
 	return chathub.IsUpstreamBlockedSignal(text)
 }
 
+// upstreamBlockDiagnostics summarizes the request shape that tripped an upstream
+// block marker. A bare audit marker can mean an oversized payload, a missing
+// tool declaration, or a prompt-shape refusal, and those need different
+// remedies; recording the shape is what lets a later capture tell them apart.
+func upstreamBlockDiagnostics(res chathub.Result, prompt string, body oaiReq) string {
+	return fmt.Sprintf(" prompt_len=%d messages=%d declared_tools=%d plugins=%d upstream_events=%d upstream_bytes=%d",
+		len(prompt), len(body.Messages), len(body.Tools),
+		len(chathub.ClientPlugins(body.Tools, "")), len(res.Events), len(res.Text))
+}
+
 func isImageLimitNotice(text string) bool {
 	t := strings.ToLower(text)
 	return strings.Contains(t, "无法生成更多图像") || strings.Contains(t, "unable to generate more images")

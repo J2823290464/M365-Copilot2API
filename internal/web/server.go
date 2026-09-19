@@ -2385,7 +2385,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isUpstreamBlockedSignal(res.Text) {
-			log.Printf("[content-policy] M365 returned a bare block marker (streaming), sending error")
+			log.Printf("[content-policy] M365 returned a bare block marker (streaming), sending error%s", upstreamBlockDiagnostics(res, prompt, body))
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 rejected this request upstream without running the model; retry with a smaller context or switch account", "code": "upstream_blocked"}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
@@ -2707,7 +2707,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if isUpstreamBlockedSignal(res.Text) {
-				log.Printf("[content-policy] M365 returned a bare block marker (reasoning stream), sending error")
+				log.Printf("[content-policy] M365 returned a bare block marker (reasoning stream), sending error%s", upstreamBlockDiagnostics(res, prompt, body))
 				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 rejected this request upstream without running the model; retry with a smaller context or switch account", "code": "upstream_blocked"}})+"\n\n")
 				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 				return
@@ -2920,7 +2920,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isUpstreamBlockedSignal(res.Text) {
-		log.Printf("[content-policy] M365 returned a bare block marker, returning 502")
+		log.Printf("[content-policy] M365 returned a bare block marker, returning 502%s", upstreamBlockDiagnostics(res, prompt, body))
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_blocked", "M365 rejected this request upstream without running the model; retry with a smaller context or switch account")
 		return
 	}

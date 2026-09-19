@@ -7,6 +7,13 @@ type Tool struct {
 	Function json.RawMessage `json:"function,omitempty"`
 }
 
+// ClientPlugins reports the upstream plugin descriptors a request will carry.
+// Exported so the web layer can log the request shape that tripped an upstream
+// block marker without duplicating the plugin policy.
+func ClientPlugins(tools []Tool, mcpServerURL string) []any {
+	return clientPlugins(tools, mcpServerURL)
+}
+
 func clientPlugins(tools []Tool, mcpServerURL string) []any {
 	plugins := make([]any, 0, len(tools)+2)
 	if mcpServerURL == "" && len(tools) == 0 {
