@@ -1137,7 +1137,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if res, ok := item["result"].(map[string]any); ok {
 						rawResult, _ = res["value"].(string)
 						if rawResult != "" && rawResult != "Success" {
-							applog.Warn("chathub", "non_success_result", "result", rawResult)
+							// prompt_len distinguishes an oversized payload from a
+							// near-empty retry: both surface as InvalidRequest, but
+							// they need opposite remedies.
+							applog.Warn("chathub", "non_success_result", "result", rawResult, "prompt_len", len(req.Text))
 							low := strings.ToLower(rawResult)
 							if strings.Contains(low, "throttl") {
 								returnConn = false
@@ -1187,6 +1190,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					case "ErrorUserThrottled", "InsufficientTokens":
 						return Result{}, ErrRateLimitNotice
 					default:
+						applog.Warn("chathub", "completion_error", "code", errCode, "message", errMsg, "prompt_len", len(req.Text))
 						if errMsg != "" {
 							return Result{}, fmt.Errorf("chathub completion error: code=%q message=%q", errCode, errMsg)
 						}

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 // sessionBinding 璁板綍涓€娆″唴瀹归敭澶嶇敤鐨勪細璇濄€侷dentity 瀛楁锛圛P/user锛変粎浣?
@@ -672,6 +674,13 @@ func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID, accou
 		if accountID != "" && sess.AccountID != accountID {
 			continue
 		}
+		// A poisoned session ends on a bare upstream audit marker: the cloud
+		// conversation holds a turn M365 refused to answer, so resuming it
+		// reproduces the rejection. Such a binding must not win the fallback
+		// even while it is still inside the recency window.
+		if sessionEndsWithBlockedTurn(sess) {
+			continue
+		}
 		if now.Sub(sess.LastUsedAt) > 5*time.Minute {
 			continue
 		}
@@ -681,6 +690,22 @@ func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID, accou
 		}
 	}
 	return best
+}
+
+// sessionEndsWithBlockedTurn reports whether a stored binding's latest turn is
+// a bare upstream audit marker rather than a real assistant answer. Bindings
+// created before the block guard existed can still carry such a turn, and any
+// request that resumes them hits the same upstream rejection again.
+func sessionEndsWithBlockedTurn(sess sessionBinding) bool {
+	for i := len(sess.ContextHistory) - 1; i >= 0; i-- {
+		role := strings.ToLower(strings.TrimSpace(sess.ContextHistory[i].Role))
+		if role != "assistant" {
+			continue
+		}
+		text := strings.TrimSpace(contentToString(sess.ContextHistory[i].Content))
+		return chathub.IsUpstreamBlockedSignal(text)
+	}
+	return false
 }
 
 func (sr *sessionResolver) ActiveSessionCounts() map[string]int {
