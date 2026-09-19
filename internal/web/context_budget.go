@@ -267,12 +267,17 @@ func (s *Server) autoCompressContext(ctx context.Context, accountID string, acco
 		Tone:        tone,
 		LicenseType: licenseType,
 		Scenario:    scenario,
+		// Never let the conversation cache attach a standalone summarization
+		// turn to a user session. Derived prompts are not user turns; mixing
+		// them in both corrupts the cloud conversation and inflates the
+		// payload until the next request trips the upstream rejection.
+		SkipConversationCache: true,
 	})
 	if result.ConversationID != "" {
 		s.dropTransientConversation(result.ConversationID)
 	}
 	if err != nil || strings.TrimSpace(result.Text) == "" {
-		log.Printf("[context-compress] failed account=%s err=%v", accountID, err)
+		log.Printf("[context-compress] failed account=%s old_messages=%d err=%v", accountID, len(oldHistory), err)
 		return messages, false
 	}
 	summary := strings.TrimSpace(result.Text)
@@ -280,7 +285,9 @@ func (s *Server) autoCompressContext(ctx context.Context, accountID string, acco
 	compressed = append(compressed, system...)
 	compressed = append(compressed, oaiMsg{Role: "system", Content: "[conversation summary]\n" + summary})
 	compressed = append(compressed, currentTurn...)
-	log.Printf("[context-compress] account=%s old_messages=%d summary_chars=%d", accountID, len(oldHistory), len(summary))
+	// standalone=true is the invariant this call relies on: the summary ran in
+	// its own cloud conversation and was not attached to any user session.
+	log.Printf("[context-compress] account=%s old_messages=%d summary_chars=%d standalone=true", accountID, len(oldHistory), len(summary))
 	return compressed, true
 }
 func flattenPromptMessagesWithBudget(messages []oaiMsg, attachments []chathub.Attachment, budget int) (string, []chathub.Attachment, bool, error) {

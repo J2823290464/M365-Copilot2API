@@ -286,6 +286,10 @@ type Request struct {
 	TimeZoneOffset        int
 	DeviceOS              string
 	HistoryBytes          int
+	// SkipConversationCache marks a derived, gateway-internal turn (context
+	// summarization, repair, routing) that must never reuse or leave behind a
+	// cloud conversation bound to a user session.
+	SkipConversationCache bool
 }
 
 type FeatureFlags struct {
@@ -386,6 +390,10 @@ type Client struct {
 	Dialer     *websocket.Dialer
 	Pool       *ConnPool
 	Trace      func(map[string]any)
+	// DeleteConversation removes a cloud conversation by id. The web layer
+	// installs it so derived turns can drop the session they just created
+	// without chathub importing the cloud client.
+	DeleteConversation func(conversationID string) error
 }
 
 func NewClient() *Client {
@@ -467,6 +475,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	if req.ConversationID == "" {
 		req.ConversationID = uuid.NewString()
 		firstTurn = true
+		if req.SkipConversationCache {
+			// A derived turn (summarization, repair, routing) carries no user
+			// context and must not leave a cloud conversation behind. Every
+			// such call reached this branch with an empty ConversationId, so
+			// this is the single point where the leak can be closed.
+			defer c.deleteConversation(req.ConversationID)
+		}
 	}
 	requestID := trace.RequestID
 	wsURL, err := BuildWSURLWithOptions(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario, req.DisableMemory)
@@ -1297,6 +1312,18 @@ func finalizeText(streamedText, final string, skipped int, emit func(string) err
 	}
 	applog.Warn("chathub", "streamed_text_diverged", "streamed_len", len(streamedText), "final_len", len(final), "skipped_snapshots", skipped, "action", "use_final")
 	return final, nil
+}
+
+// deleteConversation removes a cloud conversation the gateway created for a
+// derived, non-user turn. Failures are logged only: the local turn already
+// discarded the id, and auto_cleanup sweeps anything left behind.
+func (c *Client) deleteConversation(conversationID string) {
+	if conversationID == "" || c.DeleteConversation == nil {
+		return
+	}
+	if err := c.DeleteConversation(conversationID); err != nil {
+		applog.Warn("chathub", "derived_conversation_delete_failed", "conversation_id", conversationID, "error", err)
+	}
 }
 
 func BuildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, scenario string) (string, error) {
