@@ -2555,7 +2555,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				// client receives a real text response instead of a hard 502; the
 				// router evidence already flows into the ledger.
 				if retryErr != nil {
-					log.Printf("[tool-config] id=%s stage=required_retry_fallback err=%v", requestID, retryErr)
+					log.Printf("[tool-config] id=%s stage=required_retry_fallback err=%v retry_prompt_len=%d", requestID, retryErr, len(retryText))
 				} else {
 					log.Printf("[tool-config] id=%s stage=required_retry_fallback parsed=%t calls=%d", requestID, parsed, len(calls))
 				}
@@ -3117,6 +3117,14 @@ const sessionHeaderName = "X-M365-Session-Id"
 // 这里不再做"用完即删"，否则复用永远不可能命中。
 func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time) {
 	if res.ConversationID == "" {
+		return
+	}
+	// A bare upstream audit marker carries no assistant turn and no tool call.
+	// Binding it would register a poisoned cloud conversation in both the
+	// resolver index and the conversation manager, so the next request in this
+	// session resumes a conversation M365 already rejected.
+	if isUpstreamBlockedSignal(res.Text) {
+		log.Printf("[content-policy] skip conversation bind for blocked turn conversation=%s", res.ConversationID)
 		return
 	}
 	historyBody := *body
