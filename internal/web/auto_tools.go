@@ -55,6 +55,40 @@ var autoToolSemanticNames = map[string]clientToolKind{
 	"shell_command": clientToolKindShell,
 }
 
+// codeTaskBundles expands an intent match into a coherent set of local tools
+// so the cloud model can investigate code and files in one turn instead of
+// being left with only the single tool that matched the intent keyword.
+// The bundles only reference semantic kinds; autoSelectClientTools resolves
+// each kind to the concrete tool the client actually declared.
+var codeTaskBundles = map[clientToolKind][]clientToolKind{
+	clientToolKindSearch: {clientToolKindSearch, clientToolKindRead},
+	clientToolKindRead:   {clientToolKindSearch, clientToolKindRead},
+	clientToolKindWrite:  {clientToolKindSearch, clientToolKindRead, clientToolKindWrite},
+	clientToolKindShell:  {clientToolKindSearch, clientToolKindRead, clientToolKindShell},
+}
+
+// isLocalClientToolName reports whether the tool name is one of the local
+// workspace/client tools that run on the caller's machine. It is the single
+// source of truth shared by the auto-selection and the tool router, so the
+// two code paths cannot drift about which names are considered client tools.
+func isLocalClientToolName(value string) bool {
+	name := strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(name, "mcp__") {
+		return false
+	}
+	switch name {
+	case "exec", "execute", "shell", "shell_command", "terminal", "powershell", "bash", "sh", "cmd",
+		"read_file", "read", "view_file", "open_file", "write_file", "write", "create_file", "save_file",
+		"edit_file", "edit", "apply_patch", "search_files", "search_file", "find_files", "search_code",
+		"search", "grep", "glob", "list_directory", "list_files", "run_test", "run_tests",
+		"agent", "taskcreate", "tasklist", "taskget", "taskupdate", "taskstop", "sendmessage",
+		"webfetch", "websearch", "notebookedit", "workspace":
+		return true
+	default:
+		return false
+	}
+}
+
 func autoSelectClientTools(prompt string, clientTools []chathub.Tool, rules []AutoToolRule) []chathub.Tool {
 	definitions := parseClientToolDefinitions(clientTools)
 	clientMode := clientToolMode(definitions)
@@ -74,18 +108,26 @@ func autoSelectClientTools(prompt string, clientTools []chathub.Tool, rules []Au
 	selected := make(map[string]bool, len(intentKinds))
 	selectedNames := make([]string, 0, len(intentKinds))
 	for _, kind := range intentKinds {
-		definition := findClientToolDefinition(definitions, kind)
-		if definition == nil && customExec != nil {
-			definition = customExec
+		// Code-task bundles expand the matched intent into the full set of
+		// local tools needed to investigate and act on the workspace.
+		bundle := codeTaskBundles[kind]
+		if len(bundle) == 0 {
+			bundle = []clientToolKind{kind}
 		}
-		if definition == nil && shell != nil {
-			definition = shell
-		}
-		if definition != nil {
-			if !containsString(selectedNames, definition.Name) {
-				selectedNames = append(selectedNames, definition.Name)
+		for _, bundledKind := range bundle {
+			definition := findClientToolDefinition(definitions, bundledKind)
+			if definition == nil && customExec != nil {
+				definition = customExec
 			}
-			selected[definition.Name] = true
+			if definition == nil && shell != nil {
+				definition = shell
+			}
+			if definition != nil {
+				if !containsString(selectedNames, definition.Name) {
+					selectedNames = append(selectedNames, definition.Name)
+				}
+				selected[definition.Name] = true
+			}
 		}
 	}
 	if len(selected) == 0 {

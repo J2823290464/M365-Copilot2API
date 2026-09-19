@@ -55,8 +55,10 @@ func TestAutoInjectClaudeUsesDeclaredNamedTools(t *testing.T) {
 	}
 	got := autoSelectClientTools("edit the project", tools, nil)
 
-	if names := toolNames(t, got); !reflect.DeepEqual(names, []string{"Read", "Edit"}) {
-		t.Fatalf("names = %v, want [Read Edit]", names)
+	// The write intent expands to the search/read/write bundle so the model
+	// can locate, inspect and modify the target in one turn.
+	if names := toolNames(t, got); !reflect.DeepEqual(names, []string{"Read", "Grep", "Edit"}) {
+		t.Fatalf("names = %v, want [Read Grep Edit]", names)
 	}
 }
 
@@ -87,8 +89,40 @@ func TestAutoInjectKeepsOnlyIntentMatchingTools(t *testing.T) {
 	}
 	got := autoSelectClientTools("search the project", tools, nil)
 
-	if names := toolNames(t, got); !reflect.DeepEqual(names, []string{"Grep"}) {
-		t.Fatalf("names = %v, want [Grep]", names)
+	if names := toolNames(t, got); !reflect.DeepEqual(names, []string{"Read", "Grep"}) {
+		t.Fatalf("names = %v, want [Read Grep]", names)
+	}
+}
+
+func TestAutoSelectExpandsEditToReadWriteBundle(t *testing.T) {
+	tools := []chathub.Tool{
+		testClientTool(t, "Read", "function"),
+		testClientTool(t, "Write", "function"),
+		testClientTool(t, "Grep", "function"),
+		testClientTool(t, "Bash", "function"),
+		testClientTool(t, "get_weather", "function"),
+	}
+	got := autoSelectClientTools("edit the project configuration", tools, nil)
+
+	names := toolNames(t, got)
+	want := []string{"Read", "Write", "Grep"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestLocalClientToolNameRecognition(t *testing.T) {
+	for _, name := range []string{
+		"Grep", "Glob", "Read", "Write", "Edit", "Bash", "shell_command",
+		"search_files", "read_file", "write_file", "apply_patch", "WebSearch",
+		"mcp__mysql_execute_query",
+	} {
+		if name == "mcp__mysql_execute_query" && isLocalClientToolName(name) {
+			t.Fatalf("mcp__ tool %q must not be treated as a local client tool", name)
+		}
+		if name != "mcp__mysql_execute_query" && !isLocalClientToolName(name) {
+			t.Fatalf("local client tool %q was not recognized", name)
+		}
 	}
 }
 
