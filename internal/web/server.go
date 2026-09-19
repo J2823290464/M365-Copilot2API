@@ -2537,8 +2537,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// If that payload already exceeds what M365 accepts it fails with
 			// InvalidRequest before the model runs, so degrade to the normal
 			// answer path instead of issuing a doomed upstream call.
-			if len(prompt) > maxRequestPayloadBytes {
-				log.Printf("[tool-config] id=%s stage=required_retry_skipped reason=payload_too_large prompt_len=%d limit=%d", requestID, len(prompt), maxRequestPayloadBytes)
+			if len(prompt) > toolCfg.MaxRequestPayloadBytes {
+				log.Printf("[tool-config] id=%s stage=required_retry_skipped reason=payload_too_large prompt_len=%d limit=%d", requestID, len(prompt), toolCfg.MaxRequestPayloadBytes)
 			} else {
 				retryText := buildRequiredRetryText(prompt+"\n"+ledger.RouterContext(), toolMaps)
 				log.Printf("[tool-config] id=%s stage=required_retry prompt_len=%d", requestID, len(retryText))
@@ -2577,8 +2577,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Final byte guard: the token budget above is an estimate, and agent loops
 	// can still serialize into a payload M365 rejects with InvalidRequest.
 	// Trim the oldest groups here so the upstream call stays inside the ceiling.
-	if clamped, didClamp := clampMessagesToByteBudget(body.Messages, maxRequestPayloadBytes); didClamp {
-		log.Printf("[context-budget] id=%s byte_clamped original_bytes=%d limit=%d messages=%d", requestID, answerReq.HistoryBytes, maxRequestPayloadBytes, len(clamped))
+	if clamped, didClamp := clampMessagesToByteBudget(body.Messages, toolCfg.MaxRequestPayloadBytes); didClamp {
+		log.Printf("[context-budget] id=%s byte_clamped original_bytes=%d limit=%d messages=%d", requestID, answerReq.HistoryBytes, toolCfg.MaxRequestPayloadBytes, len(clamped))
 		body.Messages = clamped
 		answerReq = buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 		answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)

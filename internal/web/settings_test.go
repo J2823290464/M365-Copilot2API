@@ -101,3 +101,30 @@ func TestClientToolPermissionValidation(t *testing.T) {
 		t.Fatal("invalid permission accepted")
 	}
 }
+
+func TestMaxRequestPayloadBytesDefaultAndValidation(t *testing.T) {
+	v := defaultRuntimeSettings()
+	if v.MaxRequestPayloadBytes != defaultMaxRequestPayloadBytes {
+		t.Fatalf("default payload bytes = %d, want %d", v.MaxRequestPayloadBytes, defaultMaxRequestPayloadBytes)
+	}
+	v.MaxRequestPayloadBytes = 512 * 1024
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("512KiB rejected: %v", err)
+	}
+	v.MaxRequestPayloadBytes = 32 * 1024
+	if err := validateSettings(v); err == nil {
+		t.Fatal("32KiB accepted, want validation error")
+	}
+	v.MaxRequestPayloadBytes = 20 * 1024 * 1024
+	if err := validateSettings(v); err == nil {
+		t.Fatal("20MiB accepted, want validation error")
+	}
+}
+
+func TestMaxRequestPayloadBytesEnvOverride(t *testing.T) {
+	t.Setenv("M365_MAX_REQUEST_PAYLOAD_BYTES", "524288")
+	v := defaultRuntimeSettings()
+	if v.MaxRequestPayloadBytes != 512*1024 {
+		t.Fatalf("env override = %d, want 524288", v.MaxRequestPayloadBytes)
+	}
+}

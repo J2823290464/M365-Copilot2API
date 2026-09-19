@@ -74,6 +74,7 @@ type runtimeSettings struct {
 	RateLimitCooldownSeconds     int            `json:"rateLimitCooldownSeconds"`
 	Scenario                     string         `json:"scenario"`
 	MaxConversationMessages      int            `json:"maxConversationMessages"`
+	MaxRequestPayloadBytes       int            `json:"maxRequestPayloadBytes"`
 	LicenseType                  string         `json:"licenseType"`
 	AccountConcurrencyLimit      int            `json:"accountConcurrencyLimit"`
 	EnableMemoryV2               bool           `json:"enableMemoryV2"`
@@ -135,6 +136,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
 		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
 		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 600),
+		MaxRequestPayloadBytes:     envInt("M365_MAX_REQUEST_PAYLOAD_BYTES", defaultMaxRequestPayloadBytes),
 		LicenseType:                firstNonEmptySetting(os.Getenv("M365_LICENSE_TYPE"), "Starter"),
 		AccountConcurrencyLimit:    envInt("M365_ACCOUNT_CONCURRENCY_LIMIT", 8),
 		EnableMemoryV2:             os.Getenv("M365_ENABLE_MEMORY_V2") == "true",
@@ -187,6 +189,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.ContextWindow < 1024 {
 		return fmt.Errorf("上下文窗口不能小于 1024")
+	}
+	if v.MaxRequestPayloadBytes < 64*1024 || v.MaxRequestPayloadBytes > 16*1024*1024 {
+		return fmt.Errorf("请求体积上限必须为 64KiB-16MiB")
 	}
 	if v.MaxOutputTokens < 1 || v.MaxOutputTokens >= v.ContextWindow {
 		return fmt.Errorf("最大输出必须大于 0 且小于上下文窗口")

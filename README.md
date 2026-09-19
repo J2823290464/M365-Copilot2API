@@ -364,6 +364,7 @@ docker compose logs --tail=200
 | `M365_AGENT_CONTEXT_WINDOW` | `32768` | Agent/工具请求上下文窗口 |
 | `M365_AUTO_CONTEXT_COMPRESSION` | `true` | 超限时自动摘要旧历史，失败后回退裁剪 |
 | `M365_MAX_OUTPUT_TOKENS` | `16384` | 最大输出 Token |
+| `M365_MAX_REQUEST_PAYLOAD_BYTES` | `204800` | 转发前序列化历史字节上限，默认 200KiB，64KiB-16MiB |
 | `M365_CHAT_TIMEOUT_SECONDS` | `120` | 聊天超时（秒） |
 | `M365_IMAGE_TIMEOUT_SECONDS` | `150` | 图片处理超时（秒） |
 

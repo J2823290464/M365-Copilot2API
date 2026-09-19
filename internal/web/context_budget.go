@@ -422,12 +422,13 @@ func truncateContentToTokenQuota(text string, quota int) string {
 	return s
 }
 
-// maxRequestPayloadBytes bounds the serialized history a single upstream call
-// may carry. M365 rejects oversized payloads with InvalidRequest before the
-// model runs, which surfaces to clients as an opaque 502. Keep our own ceiling
-// below that so an oversized agent loop degrades locally instead of failing at
-// the upstream boundary.
-const maxRequestPayloadBytes = 200 * 1024
+// defaultMaxRequestPayloadBytes bounds the serialized history a single
+// upstream call may carry when M365_MAX_REQUEST_PAYLOAD_BYTES is not set.
+// M365 rejects oversized payloads before the model runs, which surfaces to
+// clients as an opaque 502; the local ceiling degrades an oversized agent
+// loop locally instead of failing at the upstream boundary. 200 KiB is a
+// conservative default, not an upstream limit.
+const defaultMaxRequestPayloadBytes = 200 * 1024
 
 // clampMessagesToByteBudget trims the oldest message groups until the
 // serialized history fits the byte ceiling, preserving leading system messages
