@@ -145,7 +145,7 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		o.Tools = append(o.Tools, chathub.Tool{Type: typ, Function: b})
 	}
 	if hasCustomExec {
-		o.Messages = append([]oaiMsg{{Role: "system", Content: customExecWorkspaceInstruction}}, o.Messages...)
+		o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: customExecWorkspaceInstruction})
 	}
 	return o, nil
 }

@@ -40,7 +40,7 @@ func TestResponsesCustomExecIsExclusiveTool(t *testing.T) {
 	if len(o.Tools) != 1 || o.Tools[0].Type != "custom" {
 		t.Fatalf("tools=%#v, want only custom exec", o.Tools)
 	}
-	if !strings.Contains(fmt.Sprint(o.Messages[0].Content), "Never use") {
+	if !strings.Contains(fmt.Sprint(o.Messages[len(o.Messages)-1].Content), "Never use") {
 		t.Fatalf("missing native-tool prohibition: %#v", o.Messages)
 	}
 }
@@ -58,14 +58,14 @@ func TestResponsesInstructionsAndCustomExecPolicyAreSystemMessages(t *testing.T)
 	if len(o.Messages) != 3 {
 		t.Fatalf("messages=%#v", o.Messages)
 	}
-	if o.Messages[0].Role != "system" || o.Messages[0].Content != customExecWorkspaceInstruction {
-		t.Fatalf("missing custom exec policy: %#v", o.Messages[0])
+	if o.Messages[len(o.Messages)-1].Role != "system" || o.Messages[len(o.Messages)-1].Content != customExecWorkspaceInstruction {
+		t.Fatalf("missing custom exec policy: %#v", o.Messages[len(o.Messages)-1])
 	}
-	if o.Messages[1].Role != "system" || o.Messages[1].Content != r.Instructions {
-		t.Fatalf("instructions not preserved: %#v", o.Messages[1])
+	if o.Messages[0].Role != "system" || o.Messages[0].Content != r.Instructions {
+		t.Fatalf("instructions not preserved: %#v", o.Messages[0])
 	}
-	if o.Messages[2].Role != "user" || o.Messages[2].Content != r.Input {
-		t.Fatalf("input ordering changed: %#v", o.Messages[2])
+	if o.Messages[1].Role != "user" || o.Messages[1].Content != r.Input {
+		t.Fatalf("input ordering changed: %#v", o.Messages[1])
 	}
 }
 
