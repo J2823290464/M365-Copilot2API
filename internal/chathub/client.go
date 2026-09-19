@@ -93,6 +93,24 @@ func IsContentPolicyBlock(text string) bool {
 	return false
 }
 
+// IsUpstreamBlockedSignal reports whether the upstream returned a bare audit
+// marker instead of model output. M365 emits "<block>no</block>" (and short
+// variants of the same tag) when it rejects a request before the model runs.
+// Such a payload carries no answer and no tool call: treating it as normal text
+// makes the gateway record it as success and feed it back into the next turn,
+// which is how an agent loop drifts into repeated upstream rejections.
+func IsUpstreamBlockedSignal(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || len(trimmed) > 200 {
+		return false
+	}
+	low := strings.ToLower(trimmed)
+	if !strings.Contains(low, "<block") {
+		return false
+	}
+	return strings.Contains(low, "</block>")
+}
+
 // DialError carries the HTTP status and optional Retry-After from a failed
 // WebSocket dial so the web layer can route it into the correct cooldown.
 type DialError struct {

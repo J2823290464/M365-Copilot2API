@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -158,14 +159,32 @@ func truncateUTF8(value string, limit int) string {
 const contextSummaryPrompt = `Summarize the earlier conversation for another assistant. Preserve decisions, requirements, constraints, file paths, error messages, tool results, and unresolved tasks. Remove greetings, repetition, and narration. Be concise and factual. Do not answer the user's latest request. Return only the summary.`
 
 func splitContextForCompression(messages []oaiMsg) (system, oldHistory, currentTurn []oaiMsg, ok bool) {
+	// Agent/tool loops look like:
+	//   system, user, assistant(tool_calls), tool, assistant(tool_calls), tool, ...
+	// In that shape the *last* message is a tool result, not a user turn. Using
+	// the last user message as the split point would push every intermediate
+	// tool round into currentTurn, so compression would barely shrink anything
+	// and often return ok=false. Instead, keep only the live turn (the most
+	// recent user message plus everything after it) and treat all earlier
+	// rounds as compressible history.
 	lastUser := -1
 	for i, message := range messages {
 		if strings.EqualFold(strings.TrimSpace(message.Role), "user") {
 			lastUser = i
 		}
 	}
-	if lastUser <= 0 {
-		return nil, nil, messages, false
+	if lastUser < 0 {
+		if len(messages) == 0 {
+			return nil, nil, nil, false
+		}
+		// No user message at all: everything except the trailing turn becomes
+		// compressible history so oversized loops can still be summarized.
+		system, currentTurn = splitSystemPrefix(messages)
+		if len(currentTurn) > 1 {
+			oldHistory = currentTurn[:len(currentTurn)-1]
+			currentTurn = currentTurn[len(currentTurn)-1:]
+		}
+		return system, oldHistory, currentTurn, len(oldHistory) > 0 && len(currentTurn) > 0
 	}
 	for i, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
@@ -179,7 +198,55 @@ func splitContextForCompression(messages []oaiMsg) (system, oldHistory, currentT
 			currentTurn = append(currentTurn, message)
 		}
 	}
+	// Inside a single user turn the live portion is the trailing tool round;
+	// earlier rounds of the same turn are already completed evidence and are
+	// safe to summarize. Without this split a long agent loop has an empty
+	// oldHistory and compression is skipped entirely, which is how the payload
+	// grows until M365 rejects it.
+	if summarized, live := splitCompletedRoundsFromLiveTail(currentTurn); len(live) > 0 {
+		oldHistory = append(oldHistory, summarized...)
+		currentTurn = live
+	}
 	return system, oldHistory, currentTurn, len(oldHistory) > 0 && len(currentTurn) > 0
+}
+
+// splitCompletedRoundsFromLiveTail keeps only the trailing round of the live
+// turn and returns everything before it as compressible history. A round starts
+// at an assistant message carrying tool_calls and includes its tool results.
+func splitCompletedRoundsFromLiveTail(turn []oaiMsg) (completed, live []oaiMsg) {
+	start := -1
+	for i := len(turn) - 1; i >= 0; i-- {
+		if isAssistantToolCall(turn[i]) {
+			start = i
+			break
+		}
+	}
+	if start <= 0 {
+		return nil, turn
+	}
+	return turn[:start], turn[start:]
+}
+
+func isAssistantToolCall(m oaiMsg) bool {
+	if !strings.EqualFold(strings.TrimSpace(m.Role), "assistant") {
+		return false
+	}
+	return len(m.ToolCalls) > 0
+}
+
+// splitSystemPrefix separates leading system/developer messages from the rest.
+func splitSystemPrefix(messages []oaiMsg) (system, rest []oaiMsg) {
+	index := 0
+	for index < len(messages) {
+		role := strings.ToLower(strings.TrimSpace(messages[index].Role))
+		if role != "system" && role != "developer" {
+			break
+		}
+		system = append(system, messages[index])
+		index++
+	}
+	rest = append(rest, messages[index:]...)
+	return system, rest
 }
 
 func (s *Server) autoCompressContext(ctx context.Context, accountID string, account chathub.Account, messages []oaiMsg, tone, licenseType, scenario string) ([]oaiMsg, bool) {
@@ -346,6 +413,88 @@ func truncateContentToTokenQuota(text string, quota int) string {
 		s += " \u2026[truncated]"
 	}
 	return s
+}
+
+// maxRequestPayloadBytes bounds the serialized history a single upstream call
+// may carry. M365 rejects oversized payloads with InvalidRequest before the
+// model runs, which surfaces to clients as an opaque 502. Keep our own ceiling
+// below that so an oversized agent loop degrades locally instead of failing at
+// the upstream boundary.
+const maxRequestPayloadBytes = 200 * 1024
+
+// clampMessagesToByteBudget trims the oldest message groups until the
+// serialized history fits the byte ceiling, preserving leading system messages
+// and the trailing live turn. It reports the trimmed messages and whether a
+// trim happened. Tool call/result pairing is preserved because trimming
+// happens per atom rather than per message.
+func clampMessagesToByteBudget(messages []oaiMsg, limit int) ([]oaiMsg, bool) {
+	if limit <= 0 || len(messages) == 0 {
+		return messages, false
+	}
+	if serializedMessagesBytes(messages) <= limit {
+		return messages, false
+	}
+	atoms := buildAtomsFast(messages)
+	if len(atoms) == 0 {
+		return messages, false
+	}
+	keep := make([]bool, len(atoms))
+	for i, a := range atoms {
+		if a.Kind == kindSystem {
+			keep[i] = true
+		}
+	}
+	// Anchor keeps the first assistant/tool group so the loop retains at least
+	// one piece of evidence instead of collapsing to system+latest user only.
+	if len(atoms) > 0 && atoms[len(atoms)-1].Kind != kindSystem {
+		keep[len(atoms)-1] = true
+	}
+	remaining := limit
+	for i, a := range atoms {
+		if keep[i] {
+			remaining -= atomBytes(a)
+		}
+	}
+	for i := len(atoms) - 1; i >= 0; i-- {
+		if keep[i] {
+			continue
+		}
+		cost := atomBytes(atoms[i])
+		if cost <= remaining {
+			keep[i] = true
+			remaining -= cost
+		}
+	}
+	out := make([]oaiMsg, 0, len(messages))
+	trimmed := false
+	for i, a := range atoms {
+		if keep[i] {
+			out = append(out, a.Msgs...)
+		} else {
+			trimmed = true
+		}
+	}
+	if !trimmed {
+		return messages, false
+	}
+	return out, true
+}
+
+// atomBytes estimates the serialized cost of one message group.
+func atomBytes(a contextAtom) int {
+	total := 0
+	for _, m := range a.Msgs {
+		total += serializedMessageBytes(m)
+	}
+	return total
+}
+
+func serializedMessageBytes(m oaiMsg) int {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return 0
+	}
+	return len(data)
 }
 
 // softClampToolResults is the last-resort fallback for a pinned context

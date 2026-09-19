@@ -2384,6 +2384,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
 		}
+		if isUpstreamBlockedSignal(res.Text) {
+			log.Printf("[content-policy] M365 returned a bare block marker (streaming), sending error")
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 rejected this request upstream without running the model; retry with a smaller context or switch account", "code": "upstream_blocked"}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			return
+		}
 		if isImageLimitNotice(res.Text) {
 			if s.accountPool != nil {
 				s.accountPool.MarkImageLimited(acc.ID)
@@ -2517,39 +2523,56 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
-			retryText := buildRequiredRetryText(prompt+"\n"+ledger.RouterContext(), toolMaps)
-			log.Printf("[tool-config] id=%s stage=required_retry prompt_len=%d", requestID, len(retryText))
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if retryErr == nil {
-				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
-				calls, _ = validateCalls("router", calls)
-				if parsed && len(calls) > 0 {
-					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
-					for i := range calls {
-						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
-					}
-					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
-						calls = calls[:1]
-					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, retryRes)
-					return
-				}
-			}
-			// Graceful degradation: the required retry could not produce a
-			// usable tool call. Fall through to the normal answer path so the
-			// client receives a real text response instead of a hard 502; the
-			// router evidence already flows into the ledger.
-			if retryErr != nil {
-				log.Printf("[tool-config] id=%s stage=required_retry_fallback err=%v", requestID, retryErr)
+			// A required retry rebuilds the prompt from the full router context.
+			// If that payload already exceeds what M365 accepts it fails with
+			// InvalidRequest before the model runs, so degrade to the normal
+			// answer path instead of issuing a doomed upstream call.
+			if len(prompt) > maxRequestPayloadBytes {
+				log.Printf("[tool-config] id=%s stage=required_retry_skipped reason=payload_too_large prompt_len=%d limit=%d", requestID, len(prompt), maxRequestPayloadBytes)
 			} else {
-				log.Printf("[tool-config] id=%s stage=required_retry_fallback parsed=%t calls=%d", requestID, parsed, len(calls))
+				retryText := buildRequiredRetryText(prompt+"\n"+ledger.RouterContext(), toolMaps)
+				log.Printf("[tool-config] id=%s stage=required_retry prompt_len=%d", requestID, len(retryText))
+				retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+				if retryErr == nil {
+					calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
+					calls = filterCompletedCalls(calls, ledger)
+					calls, _ = validateCalls("router", calls)
+					if parsed && len(calls) > 0 {
+						scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
+						for i := range calls {
+							calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+						}
+						calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+						if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+							calls = calls[:1]
+						}
+						_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, retryRes)
+						return
+					}
+				}
+				// Graceful degradation: the required retry could not produce a
+				// usable tool call. Fall through to the normal answer path so the
+				// client receives a real text response instead of a hard 502; the
+				// router evidence already flows into the ledger.
+				if retryErr != nil {
+					log.Printf("[tool-config] id=%s stage=required_retry_fallback err=%v", requestID, retryErr)
+				} else {
+					log.Printf("[tool-config] id=%s stage=required_retry_fallback parsed=%t calls=%d", requestID, parsed, len(calls))
+				}
 			}
 		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 	answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
+	// Final byte guard: the token budget above is an estimate, and agent loops
+	// can still serialize into a payload M365 rejects with InvalidRequest.
+	// Trim the oldest groups here so the upstream call stays inside the ceiling.
+	if clamped, didClamp := clampMessagesToByteBudget(body.Messages, maxRequestPayloadBytes); didClamp {
+		log.Printf("[context-budget] id=%s byte_clamped original_bytes=%d limit=%d messages=%d", requestID, answerReq.HistoryBytes, maxRequestPayloadBytes, len(clamped))
+		body.Messages = clamped
+		answerReq = buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+		answerReq.HistoryBytes = serializedMessagesBytes(body.Messages)
+	}
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
@@ -2680,6 +2703,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if isContentPolicyBlock(res.Text) {
 				log.Printf("[content-policy] M365 blocked the request (reasoning stream), sending error")
 				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 content policy blocked this request; try again or switch account", "code": "upstream_content_blocked"}})+"\n\n")
+				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+				return
+			}
+			if isUpstreamBlockedSignal(res.Text) {
+				log.Printf("[content-policy] M365 returned a bare block marker (reasoning stream), sending error")
+				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 rejected this request upstream without running the model; retry with a smaller context or switch account", "code": "upstream_blocked"}})+"\n\n")
 				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 				return
 			}
@@ -2888,6 +2917,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if isContentPolicyBlock(res.Text) {
 		log.Printf("[content-policy] M365 blocked the request, returning 503")
 		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
+		return
+	}
+	if isUpstreamBlockedSignal(res.Text) {
+		log.Printf("[content-policy] M365 returned a bare block marker, returning 502")
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_blocked", "M365 rejected this request upstream without running the model; retry with a smaller context or switch account")
 		return
 	}
 	if isImageLimitNotice(res.Text) {

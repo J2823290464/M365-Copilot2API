@@ -243,6 +243,11 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	tenant := tenantFromRequest(r)
 	projectID := projectIDFromRequest(r, body)
 	explicitID := sessionIDFromRequest(r, body)
+	// requestedAccount is the account the client explicitly pinned for this
+	// request. The tenant-recent fallback must never hand a session created on
+	// one account to a request routed to a different account, otherwise tool
+	// loops from concurrent sessions cross-contaminate each other.
+	requestedAccount := strings.TrimSpace(body.AccountID)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
@@ -268,7 +273,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
 	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
 	ipFinger := clientIPFingerprint(r)
-	if bestID, n := sr.matchContextLocked(tenant, projectID, ipFinger, body.Messages); bestID != "" {
+	if bestID, n := sr.matchContextLocked(tenant, projectID, ipFinger, requestedAccount, body.Messages); bestID != "" {
 		sess := sr.sessions[bestID]
 		sess.LastUsedAt = time.Now().UTC()
 		sr.sessions[bestID] = sess
@@ -285,7 +290,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 
 	// 寮辩害鏉熷厹搴曪細鍐呭涓嶆瀯鎴愪弗鏍煎墠缂€锛屼絾涓庢煇涓巻鍙查珮搴︾浉浼硷紙濡傚鎴风
 	// 鏈湴鎴柇浜嗗巻鍙诧級锛屼粛澶嶇敤璇ヤ細璇濄€傛鏃跺閲忚竟鐣屾湭鐭ワ紝涓婂眰鍙戦€佸叏閲忋€?
-	suffixID, suffixN := sr.matchSuffixLocked(tenant, projectID, ipFinger, body.Messages)
+	suffixID, suffixN := sr.matchSuffixLocked(tenant, projectID, ipFinger, requestedAccount, body.Messages)
 	if suffixID != "" {
 		sess := sr.sessions[suffixID]
 		sess.LastUsedAt = time.Now().UTC()
@@ -305,7 +310,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// Only applies when there are multiple messages (tool loop) to avoid preventing
 	// the creation of genuinely new conversations.
 	if explicitID == "" && hasAssistantReply(body.Messages) {
-		if fallback := sr.recentActiveSessionForTenant(tenant, projectID); fallback != "" {
+		if fallback := sr.recentActiveSessionForTenant(tenant, projectID, requestedAccount); fallback != "" {
 			sess := sr.sessions[fallback]
 			sess.LastUsedAt = time.Now().UTC()
 			sr.sessions[fallback] = sess
@@ -323,7 +328,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	return ResolveResult{IsNew: true}
 }
 
-func (sr *sessionResolver) matchSuffixLocked(tenant, projectID, ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchSuffixLocked(tenant, projectID, ipFinger, accountID string, messages []oaiMsg) (string, int) {
 	if len(messages) < 2 {
 		return "", 0
 	}
@@ -345,6 +350,12 @@ func (sr *sessionResolver) matchSuffixLocked(tenant, projectID, ipFinger string,
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
+			continue
+		}
+		// Account pinning is part of the identity of a resumed session: without
+		// it concurrent conversations served by different accounts collapse
+		// into one cloud conversation.
+		if accountID != "" && sess.AccountID != accountID {
 			continue
 		}
 		hist := sess.ContextHistory
@@ -378,7 +389,7 @@ func suffixMatchLen(hist, msgs []oaiMsg) int {
 // matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
 // 閭ｄ釜浼氳瘽锛涘彧閫夊墠缂€鏈€闀跨殑涓€涓紝閬垮厤鐭墠缂€鍦ㄤ笉鍚屼細璇濋棿浜掓挒銆傝繑鍥?
 // (sessionID, 鍖归厤鍒扮殑娑堟伅鏉℃暟)銆?
-func (sr *sessionResolver) matchContextLocked(tenant, projectID, ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchContextLocked(tenant, projectID, ipFinger, accountID string, messages []oaiMsg) (string, int) {
 	if len(messages) == 0 {
 		return "", 0
 	}
@@ -399,6 +410,10 @@ func (sr *sessionResolver) matchContextLocked(tenant, projectID, ipFinger string
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
+			continue
+		}
+		// See matchSuffixLocked: a resumed conversation is account-scoped.
+		if accountID != "" && sess.AccountID != accountID {
 			continue
 		}
 		n := contextPrefixLen(sess.ContextHistory, messages)
@@ -636,7 +651,7 @@ func hasAssistantReply(msgs []oaiMsg) bool {
 	return false
 }
 
-func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID string) string {
+func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID, accountID string) string {
 	if tenant == "" {
 		return ""
 	}
@@ -648,6 +663,13 @@ func (sr *sessionResolver) recentActiveSessionForTenant(tenant, projectID string
 			continue
 		}
 		if sess.ProjectID != projectID {
+			continue
+		}
+		// When the caller pinned an account, only reuse a session that was
+		// created on that same account. Account selection happens after session
+		// resolution, so an unbound fallback can silently pair a conversation
+		// from account A with a request served by account B.
+		if accountID != "" && sess.AccountID != accountID {
 			continue
 		}
 		if now.Sub(sess.LastUsedAt) > 5*time.Minute {

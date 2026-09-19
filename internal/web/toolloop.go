@@ -191,6 +191,13 @@ func isContentPolicyBlock(text string) bool {
 	return chathub.IsContentPolicyBlock(text)
 }
 
+// isUpstreamBlockedSignal reports a bare upstream audit marker (<block>no</block>)
+// rather than model output. It carries neither an answer nor a tool call, so it
+// must not be recorded as a successful conversation turn.
+func isUpstreamBlockedSignal(text string) bool {
+	return chathub.IsUpstreamBlockedSignal(text)
+}
+
 func isImageLimitNotice(text string) bool {
 	t := strings.ToLower(text)
 	return strings.Contains(t, "无法生成更多图像") || strings.Contains(t, "unable to generate more images")
